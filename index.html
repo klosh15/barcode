@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#28595d">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<title>Inventario v5-B</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<!-- ============ CONFIGURACIÓN INICIAL ============ -->
+<main id="p-setup" class="page" hidden>
+  <h1>Configuración inicial</h1>
+  <p class="muted">Esta base de datos todavía no existe en este celular. Cargue el maestro y defina la clave de cada usuario. <strong>Si se pierden las claves y no se exportó, los datos no se pueden recuperar.</strong></p>
+
+  <div class="card">
+    <h2 style="margin-top:0">1. Maestro de bienes</h2>
+    <p class="muted">Archivo Excel (.xlsx, .xls) o .csv con las columnas IDCodigoAntiguo, Descripcion, Nombre, Ubicacion, Ambiente y Baja. Opcional: una hoja «Catalogo» con columnas Nombre, Ubicacion y Ambiente para ampliar las listas.</p>
+    <input id="f-maestro" type="file" accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv">
+    <div id="setup-resumen"></div>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0">2. Claves por persona</h2>
+    <p class="muted">Mínimo 10 caracteres, no solo números, y distintas entre usuarios. Mejor una frase fácil de recordar.</p>
+    <div id="setup-claves"></div>
+    <label style="display:flex;gap:8px;align-items:center;text-transform:none;font-size:14px;margin-top:14px"><input id="setup-ver" type="checkbox"> Mostrar claves</label>
+  </div>
+
+  <div id="setup-msg"></div>
+  <button id="btn-setup" class="btn" disabled>Crear base cifrada</button>
+</main>
+
+<!-- ============ INICIO DE SESIÓN ============ -->
+<main id="p-login" class="page" hidden>
+  <h1>Inventario de bienes</h1>
+  <p class="muted">Base de datos cifrada en este celular.</p>
+  <div class="card">
+    <label style="margin-top:0">Usuario</label>
+    <div id="login-users" class="chips" role="group" aria-label="Usuario"></div>
+    <label for="login-clave">Clave</label>
+    <input id="login-clave" type="password" autocomplete="off" autocapitalize="off" spellcheck="false">
+    <label style="display:flex;gap:8px;align-items:center;text-transform:none;font-size:14px"><input id="login-ver" type="checkbox"> Mostrar clave</label>
+    <div id="login-msg"></div>
+    <button id="btn-login" class="btn" style="margin-top:12px">Entrar</button>
+  </div>
+  <p class="muted" id="login-info"></p>
+</main>
+
+<!-- ============ PANTALLA PRINCIPAL ============ -->
+<div id="p-main" hidden>
+  <div class="topbar">
+    <div class="who"><span id="top-user"></span><small id="top-sub"></small></div>
+    <div class="btns">
+      <button id="btn-menu" class="btn sec small" style="width:auto">Menú</button>
+      <button id="btn-lock" class="btn sec small" style="width:auto">Bloquear</button>
+    </div>
+  </div>
+  <div class="page">
+    <div id="main-aviso"></div>
+    <div class="camwrap">
+      <video id="video" playsinline muted></video>
+      <div class="retic"></div>
+      <div class="hint" id="cam-hint">Cámara apagada</div>
+    </div>
+    <div class="row">
+      <button id="btn-cam" class="btn small">Activar cámara</button>
+      <button id="btn-torch" class="btn sec small">Linterna</button>
+    </div>
+    <label for="manual">Digitar código (respaldo)</label>
+    <div class="row" style="grid-template-columns:1fr auto">
+      <input id="manual" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="64.620.0022">
+      <button id="btn-manual" class="btn small" style="width:auto">Buscar</button>
+    </div>
+    <div class="stats" id="stats"></div>
+  </div>
+</div>
+
+<!-- ============ FICHA DEL BIEN ============ -->
+<div id="o-ficha" class="overlay" hidden>
+  <div class="page">
+    <div class="muted" id="ficha-previo"></div>
+    <div id="ficha-baja" class="baja" hidden>BAJA</div>
+    <div class="code" id="ficha-codigo"></div>
+    <div id="ficha-campos"></div>
+    <div class="field"><div class="k">Capturado</div><div class="v stamp" id="ficha-cap"></div></div>
+    <div style="text-align:center"><button id="btn-descartar" class="link">Descartar lectura sin guardar</button></div>
+  </div>
+  <div class="sticky-actions"><div class="in row">
+    <button id="btn-correcto" class="btn ok">✔ Correcto</button>
+    <button id="btn-incorrecto" class="btn no">✖ Incorrecto</button>
+  </div></div>
+</div>
+
+<!-- ============ CORRECCIÓN ============ -->
+<div id="o-corr" class="overlay" hidden>
+  <div class="page">
+    <h1>Corregir datos</h1>
+    <div class="code" id="corr-codigo"></div>
+    <p class="muted">Elija de la lista los datos reales del bien. Toque el campo y escriba para filtrar.</p>
+    <div id="corr-form"></div>
+    <div id="corr-msg"></div>
+  </div>
+  <div class="sticky-actions"><div class="in row">
+    <button id="btn-corr-guardar" class="btn ok">Guardar</button>
+    <button id="btn-corr-cancelar" class="btn sec">Cancelar</button>
+  </div></div>
+</div>
+
+<!-- ============ ALTA (CÓDIGO NO ENCONTRADO) ============ -->
+<div id="o-alta" class="overlay" hidden>
+  <div class="page">
+    <div class="baja" style="background:var(--warn);box-shadow:none;font-size:24px;letter-spacing:.05em">NO ESTÁ EN LA BASE</div>
+    <div class="code" id="alta-codigo"></div>
+    <div id="alta-aviso"></div>
+    <p class="muted">Registre el bien como sobrante indicando dónde se encontró.</p>
+    <div id="alta-form"></div>
+    <div id="alta-msg"></div>
+  </div>
+  <div class="sticky-actions"><div class="in row">
+    <button id="btn-alta-guardar" class="btn ok">Guardar</button>
+    <button id="btn-alta-cancelar" class="btn sec">Cancelar</button>
+  </div></div>
+</div>
+
+<!-- ============ MENÚ ============ -->
+<div id="o-menu" class="overlay" hidden>
+  <div class="topbar"><div class="who">Menú</div><button id="btn-menu-cerrar" class="btn sec small" style="width:auto">Volver</button></div>
+  <div class="page">
+    <div class="card"><h2 style="margin-top:0">Resumen</h2><div id="menu-resumen"></div></div>
+    <div class="card"><h2 style="margin-top:0">Últimos registros</h2><div id="menu-ultimos" style="overflow-x:auto"></div></div>
+    <div class="card">
+      <h2 style="margin-top:0">Exportar (sin cifrar)</h2>
+      <p class="muted">Genera un Excel con Bienes, Lecturas, Altas y Faltantes. El archivo sale <strong>en claro</strong>.</p>
+      <div class="row">
+        <button id="btn-export" class="btn">Descargar Excel</button>
+        <button id="btn-share" class="btn sec">Compartir…</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2 style="margin-top:0">Seguridad</h2>
+      <label for="sel-bloqueo" style="margin-top:0">Bloqueo por inactividad</label>
+      <select id="sel-bloqueo"><option value="2">2 minutos</option><option value="5">5 minutos</option><option value="10">10 minutos</option><option value="15">15 minutos</option></select>
+      <div style="height:10px"></div>
+      <button id="btn-cambiar" class="btn sec">Cambiar mi clave</button>
+      <div style="height:8px"></div>
+      <button id="btn-borrar" class="btn sec" style="color:var(--bad)">Borrar toda la base…</button>
+    </div>
+    <p class="muted" id="menu-info"></p>
+  </div>
+</div>
+
+<div id="toast" role="status" aria-live="polite"></div>
+<div id="modal" class="modal" hidden><div class="box" id="modal-box"></div></div>
+<div id="busy" class="busy" hidden><div id="busy-txt">Procesando…</div></div>
+
+<script src="lib/xlsx.full.min.js"></script>
+<script src="lib/zxing.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
