@@ -1,5 +1,5 @@
 /* Service worker: guarda la aplicación para que abra sin internet. No guarda datos del inventario. */
-const CACHE = 'inventario-v5B-1.0.0';
+const CACHE = 'inventario-v5B-1.2.0';
 const ARCHIVOS = ['./', 'index.html', 'app.css', 'app.js', 'manifest.webmanifest',
   'lib/xlsx.full.min.js', 'lib/zxing.min.js', 'icons/icon-192.png', 'icons/icon-512.png'];
 

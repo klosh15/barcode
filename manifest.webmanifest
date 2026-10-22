@@ -1,7 +1,7 @@
 {
   "name": "Inventario de bienes v5-B",
   "short_name": "Inventario",
-  "description": "Inventario con código de barras, base cifrada en el celular",
+  "description": "Inventario con código de barras, base de datos en el celular",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",

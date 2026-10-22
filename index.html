@@ -17,7 +17,7 @@
 <!-- ============ CONFIGURACIÓN INICIAL ============ -->
 <main id="p-setup" class="page" hidden>
   <h1>Configuración inicial</h1>
-  <p class="muted">Esta base de datos todavía no existe en este celular. Cargue el maestro y defina la clave de cada usuario. <strong>Si se pierden las claves y no se exportó, los datos no se pueden recuperar.</strong></p>
+  <p class="muted">Esta base de datos todavía no existe en este celular. Cargue el maestro, elija su usuario y defina su clave. <strong>Si se pierde la clave y no se exportó, los datos no se pueden recuperar.</strong></p>
 
   <div class="card">
     <h2 style="margin-top:0">1. Maestro de bienes</h2>
@@ -27,23 +27,24 @@
   </div>
 
   <div class="card">
-    <h2 style="margin-top:0">2. Claves por persona</h2>
-    <p class="muted">Mínimo 10 caracteres, no solo números, y distintas entre usuarios. Mejor una frase fácil de recordar.</p>
+    <h2 style="margin-top:0">2. Usuario y clave</h2>
+    <p class="muted">Elija un usuario y defina su clave: mínimo 10 caracteres y no solo números. Mejor una frase fácil de recordar.</p>
+    <div id="setup-users" class="chips" role="group" aria-label="Usuario"></div>
     <div id="setup-claves"></div>
     <label style="display:flex;gap:8px;align-items:center;text-transform:none;font-size:14px;margin-top:14px"><input id="setup-ver" type="checkbox"> Mostrar claves</label>
   </div>
 
   <div id="setup-msg"></div>
-  <button id="btn-setup" class="btn" disabled>Crear base cifrada</button>
+  <button id="btn-setup" class="btn" disabled>Crear base</button>
 </main>
 
 <!-- ============ INICIO DE SESIÓN ============ -->
 <main id="p-login" class="page" hidden>
   <h1>Inventario de bienes</h1>
-  <p class="muted">Base de datos cifrada en este celular.</p>
+  <p class="muted">Base de datos de este celular.</p>
   <div class="card">
     <label style="margin-top:0">Usuario</label>
-    <div id="login-users" class="chips" role="group" aria-label="Usuario"></div>
+    <div id="login-user" class="code" style="font-size:20px"></div>
     <label for="login-clave">Clave</label>
     <input id="login-clave" type="password" autocomplete="off" autocapitalize="off" spellcheck="false">
     <label style="display:flex;gap:8px;align-items:center;text-transform:none;font-size:14px"><input id="login-ver" type="checkbox"> Mostrar clave</label>
@@ -136,8 +137,8 @@
     <div class="card"><h2 style="margin-top:0">Resumen</h2><div id="menu-resumen"></div></div>
     <div class="card"><h2 style="margin-top:0">Últimos registros</h2><div id="menu-ultimos" style="overflow-x:auto"></div></div>
     <div class="card">
-      <h2 style="margin-top:0">Exportar (sin cifrar)</h2>
-      <p class="muted">Genera un Excel con Bienes, Lecturas, Altas y Faltantes. El archivo sale <strong>en claro</strong>.</p>
+      <h2 style="margin-top:0">Exportar</h2>
+      <p class="muted">Genera un Excel con Bienes, Lecturas, Altas y Faltantes. Guárdelo y envíelo solo por un canal acordado.</p>
       <div class="row">
         <button id="btn-export" class="btn">Descargar Excel</button>
         <button id="btn-share" class="btn sec">Compartir…</button>

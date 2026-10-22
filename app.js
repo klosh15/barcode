@@ -1,7 +1,7 @@
 'use strict';
-/* Inventario v5-B · clave por persona · base cifrada (AES-256-GCM) en IndexedDB */
+/* Inventario v5-B · un usuario y una clave por celular · base en IndexedDB */
 
-const APP_VER = '5B-1.0.0';
+const APP_VER = '5B-1.2.0';
 const USUARIOS = ['PAOLO', 'EYMHI', 'JHIMY', 'CARLOS', 'INVITADO'];
 const ITER = 600000;            // iteraciones PBKDF2-SHA256
 const MIN_CLAVE = 10;
@@ -19,6 +19,7 @@ const $ = (s, r = document) => r.querySelector(s);
 const te = new TextEncoder(), td = new TextDecoder();
 const p2 = n => String(n).padStart(2, '0');
 const limpiar = t => String(t == null ? '' : t).trim().toUpperCase().replace(/\s+/g, '');
+const normInterno = c => limpiar(c).replace(/^0+(?=\d)/, '');   // 000013401 == 13401
 const sinTilde = s => String(s).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '');
 const fmt = ms => { const d = new Date(ms); return `${p2(d.getDate())}/${p2(d.getMonth() + 1)}/${d.getFullYear()} ${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`; };
 const serial = ms => (ms - new Date(ms).getTimezoneOffset() * 60000) / 86400000 + 25569;   // serie de Excel en hora local
@@ -112,6 +113,8 @@ let metaCache = null;
 
 function nuevoEstado(maestro) {
   const bienes = new Map();
+  const porInterno = new Map();
+  maestro.bienes.forEach(b => { if (b.CodigoInterno) porInterno.set(normInterno(b.CodigoInterno), b.IDCodigoAntiguo); });
   maestro.bienes.forEach(b => bienes.set(b.IDCodigoAntiguo, { ...b, Resultado: '', Nombre1: '', Ubicacion1: '', Ambiente1: '', FechaCaptura: 0, FechaGuardado: 0, Usuario: '', AvisoReloj: '' }));
   const nombres = new Set(maestro.catalogo.nombres), ubic = new Set(maestro.catalogo.ubicaciones), amb = new Set(maestro.catalogo.ambientes);
   const porUbic = new Map();
@@ -120,7 +123,7 @@ function nuevoEstado(maestro) {
   maestro.catalogo.pares.forEach(([u, a]) => par(u, a));
   const ord = s => [...s].filter(Boolean).sort((a, b) => a.localeCompare(b, 'es'));
   return {
-    bienes, info: maestro.info, historial: [], altas: [], ultimaCaptura: 0, relojDudoso: false,
+    bienes, porInterno, info: maestro.info, historial: [], altas: [], ultimaCaptura: 0, relojDudoso: false,
     cat: { nombres: ord(nombres), ubicaciones: ord(ubic), ambientes: ord(amb), porUbic: new Map([...porUbic].map(([u, s]) => [u, ord(s)])) },
   };
 }
@@ -143,7 +146,7 @@ const overlayAbierto = () => OVERLAYS.some(x => !$('#o-' + x).hidden) || !$('#mo
 /* ============================================================
    CONFIGURACIÓN INICIAL
    ============================================================ */
-let maestroCargado = null;
+let maestroCargado = null, setupUser = null, usuarioFijo = null;
 
 function leerMaestro(buf, nombreArchivo) {
   const wb = /.csv$/i.test(nombreArchivo) ? XLSX.read(td.decode(buf), { type: 'string' }) : XLSX.read(buf, { type: 'array' });
@@ -153,9 +156,10 @@ function leerMaestro(buf, nombreArchivo) {
   const filas = XLSX.utils.sheet_to_json(wb.Sheets[nombreBienes], { defval: '', raw: false });
   if (!filas.length) throw new Error('La hoja «' + nombreBienes + '» está vacía.');
   const mapa = {}; Object.keys(filas[0]).forEach(h => { mapa[sinTilde(h)] = h; });
+  const colInt = ['codigointerno', 'idcodigointerno', 'codinterno'].map(k => mapa[k]).find(Boolean);
   const faltan = COLS.filter(c => !mapa[sinTilde(c)]);
   if (faltan.length) throw new Error('Faltan columnas: ' + faltan.join(', ') + '.');
-  const bienes = [], vistos = new Set(), duplicados = [], formatos = {}, otros = [];
+  const bienes = [], vistos = new Set(), duplicados = [], formatos = {}, otros = [], internos = new Set(), internosRep = [];
   let vacios = 0, bajaRara = 0;
   for (const f of filas) {
     const g = c => String(f[mapa[sinTilde(c)]] == null ? '' : f[mapa[sinTilde(c)]]).trim();
@@ -165,7 +169,9 @@ function leerMaestro(buf, nombreArchivo) {
     vistos.add(codigo);
     let baja = g('Baja'); if (baja !== '0' && baja !== '1') { if (baja !== '') bajaRara++; baja = baja === '1' ? '1' : '0'; }
     const fm = formatoDe(codigo); if (fm) formatos[fm] = (formatos[fm] || 0) + 1; else otros.push(codigo);
-    bienes.push({ IDCodigoAntiguo: codigo, Descripcion: g('Descripcion'), Nombre: g('Nombre'), Ubicacion: g('Ubicacion'), Ambiente: g('Ambiente'), Baja: baja });
+    let interno = colInt ? String(f[colInt] == null ? '' : f[colInt]).trim() : '';
+    if (interno) { const k = normInterno(interno); if (internos.has(k)) { internosRep.push(interno); interno = ''; } else internos.add(k); }
+    bienes.push({ IDCodigoAntiguo: codigo, CodigoInterno: interno, Descripcion: g('Descripcion'), Nombre: g('Nombre'), Ubicacion: g('Ubicacion'), Ambiente: g('Ambiente'), Baja: baja });
   }
   const catalogo = { nombres: [], ubicaciones: [], ambientes: [], pares: [] };
   if (nombreCat) {
@@ -178,30 +184,32 @@ function leerMaestro(buf, nombreArchivo) {
       if (m.ubicacion && m.ambiente) catalogo.pares.push([m.ubicacion, m.ambiente]);
     });
   }
-  return { bienes, catalogo, info: { archivo: nombreArchivo, filas: bienes.length, cargadoEn: Date.now() }, resumen: { total: filas.length, vacios, duplicados, formatos, otros, bajaRara, bajas: bienes.filter(b => b.Baja === '1').length, catalogo: !!nombreCat } };
+  return { bienes, catalogo, info: { archivo: nombreArchivo, filas: bienes.length, cargadoEn: Date.now() }, resumen: { conInterno: internos.size, internosRep, total: filas.length, vacios, duplicados, formatos, otros, bajaRara, bajas: bienes.filter(b => b.Baja === '1').length, catalogo: !!nombreCat } };
 }
 
 function pintarResumen(r) {
   const c = $('#setup-resumen'); c.replaceChildren();
   const filas = [['Filas leídas', r.total], ['Bienes cargados', r.bienes.length], ['Con Baja = 1', r.resumen.bajas],
-    ['Duplicados descartados', r.resumen.duplicados.length], ['Filas sin código', r.resumen.vacios], ['Hoja Catálogo', r.resumen.catalogo ? 'sí' : 'no']];
+    ['Duplicados descartados', r.resumen.duplicados.length], ['Filas sin código', r.resumen.vacios], ['Con código interno', r.resumen.conInterno], ['Hoja Catálogo', r.resumen.catalogo ? 'sí' : 'no']];
   const t = el('table'); filas.forEach(([k, v]) => t.append(el('tr', {}, el('td', { text: k }), el('td', { text: String(v) }))));
   c.append(el('h2', { text: r.info.archivo }), t, el('h2', { text: 'Formatos de código' }));
   const tf = el('table'); Object.entries(r.resumen.formatos).forEach(([k, v]) => tf.append(el('tr', {}, el('td', { text: k }), el('td', { text: String(v) }))));
   if (r.resumen.otros.length) tf.append(el('tr', {}, el('td', { text: 'Otros (se aceptan igual)' }), el('td', { text: r.resumen.otros.length + ': ' + r.resumen.otros.slice(0, 8).join(', ') + (r.resumen.otros.length > 8 ? '…' : '') })));
   c.append(tf);
   if (r.resumen.duplicados.length) c.append(el('div', { class: 'msg warn', text: 'Códigos duplicados (se conservó el primero): ' + r.resumen.duplicados.slice(0, 8).join(', ') }));
+  if (r.resumen.internosRep.length) c.append(el('div', { class: 'msg warn', text: 'Códigos internos repetidos (se conservó el primero): ' + r.resumen.internosRep.slice(0, 8).join(', ') }));
   if (r.resumen.bajaRara) c.append(el('div', { class: 'msg warn', text: r.resumen.bajaRara + ' filas con Baja distinta de 0 o 1; se trataron como 0.' }));
 }
 
 function iniciarSetup() {
   maestroCargado = null;
+  usuarioFijo = null; setupUser = null;
+  const us = $('#setup-users'); us.replaceChildren();
+  USUARIOS.forEach(u => us.append(el('button', { class: 'chip', type: 'button', 'aria-pressed': 'false', text: u, onclick: ev => { setupUser = u; us.querySelectorAll('.chip').forEach(x => x.setAttribute('aria-pressed', String(x === ev.currentTarget))); $('#pw-1').focus(); } })));
   const cont = $('#setup-claves'); cont.replaceChildren();
-  USUARIOS.forEach(u => {
-    cont.append(el('label', { for: 'pw-' + u, text: u }),
-      el('input', { id: 'pw-' + u, type: 'password', autocomplete: 'new-password', placeholder: 'Clave de ' + u, 'data-u': u }),
-      el('input', { id: 'pw2-' + u, type: 'password', autocomplete: 'new-password', placeholder: 'Repetir clave', style: 'margin-top:6px', 'data-u': u }));
-  });
+  cont.append(el('label', { for: 'pw-1', text: 'Clave' }),
+    el('input', { id: 'pw-1', type: 'password', autocomplete: 'new-password', placeholder: 'Clave' }),
+    el('input', { id: 'pw-2', type: 'password', autocomplete: 'new-password', placeholder: 'Repetir clave', style: 'margin-top:6px' }));
   $('#setup-resumen').replaceChildren(); mensaje($('#setup-msg'), 'err', '');
   $('#btn-setup').disabled = true;
   pagina('setup');
@@ -210,35 +218,26 @@ function iniciarSetup() {
 async function crearBase() {
   const msg = $('#setup-msg'); mensaje(msg, 'err', '');
   if (!maestroCargado) return mensaje(msg, 'err', 'Cargue primero el archivo del maestro.');
-  const claves = {};
-  for (const u of USUARIOS) {
-    const a = $('#pw-' + u).value, b = $('#pw2-' + u).value;
-    if (a.length < MIN_CLAVE) return mensaje(msg, 'err', `La clave de ${u} debe tener al menos ${MIN_CLAVE} caracteres.`);
-    if (/^\d+$/.test(a)) return mensaje(msg, 'err', `La clave de ${u} no puede ser solo números.`);
-    if (a !== b) return mensaje(msg, 'err', `Las dos claves de ${u} no coinciden.`);
-    claves[u] = a;
-  }
-  if (new Set(Object.values(claves)).size !== USUARIOS.length) return mensaje(msg, 'err', 'Cada usuario debe tener una clave distinta.');
+  const u = setupUser, a = $('#pw-1').value, b = $('#pw-2').value;
+  if (!u) return mensaje(msg, 'err', 'Elija un usuario.');
+  if (a.length < MIN_CLAVE) return mensaje(msg, 'err', `La clave debe tener al menos ${MIN_CLAVE} caracteres.`);
+  if (/^\d+$/.test(a)) return mensaje(msg, 'err', 'La clave no puede ser solo números.');
+  if (a !== b) return mensaje(msg, 'err', 'Las dos claves no coinciden.');
   try {
-    busy('Cifrando la base…'); await tick();
+    busy('Procesando…'); await tick();
     const raw = crypto.getRandomValues(new Uint8Array(32));        // clave maestra de datos
-    const usuarios = {};
-    for (const u of USUARIOS) {
-      $('#busy-txt').textContent = 'Protegiendo la clave de ' + u + '…'; await tick();
-      const sal = crypto.getRandomValues(new Uint8Array(16));
-      const kek = await derivarKEK(claves[u], sal, ITER);
-      usuarios[u] = { sal, ...(await aesEnc(kek, raw)) };
-    }
+    const sal = crypto.getRandomValues(new Uint8Array(16));
+    const kek = await derivarKEK(a, sal, ITER);
+    const usuarios = { [u]: { sal, ...(await aesEnc(kek, raw)) } };
     const K = await importarK(raw);
-    $('#busy-txt').textContent = 'Cifrando el maestro…'; await tick();
     const { resumen, total, ...maestro } = maestroCargado;
     const control = await encJSON(K, { ok: 'inventario-v5B' });
     await idbPut('maestro', { k: 'main', ...(await encJSON(K, maestro)) });
     await idbPut('meta', { k: 'meta', ver: 1, iter: ITER, usuarios, control, creado: Date.now() });
     raw.fill(0);
     try { if (navigator.storage && navigator.storage.persist) await navigator.storage.persist(); } catch (e) { /* opcional */ }
-    unbusy(); maestroCargado = null;
-    iniciarLogin('Base creada. Ingrese con su usuario y clave.');
+    unbusy(); maestroCargado = null; usuarioFijo = u;
+    iniciarLogin('Base creada. Ingrese con su clave.');
   } catch (e) { unbusy(); console.error(e); mensaje(msg, 'err', 'No se pudo crear la base: ' + (e.message || e)); }
 }
 
@@ -247,9 +246,8 @@ async function crearBase() {
    ============================================================ */
 let userSel = null;
 function iniciarLogin(info) {
-  userSel = null;
-  const c = $('#login-users'); c.replaceChildren();
-  USUARIOS.forEach(u => c.append(el('button', { class: 'chip', type: 'button', 'aria-pressed': 'false', text: u, onclick: ev => { userSel = u; c.querySelectorAll('.chip').forEach(x => x.setAttribute('aria-pressed', String(x === ev.currentTarget))); $('#login-clave').focus(); } })));
+  userSel = usuarioFijo;
+  $('#login-user').textContent = usuarioFijo || '';
   $('#login-clave').value = ''; $('#login-ver').checked = false; $('#login-clave').type = 'password';
   mensaje($('#login-msg'), info && /bloque|inactiv|sesión cerrada/i.test(info) ? 'warn' : 'info', info || '');
   $('#login-info').textContent = 'Versión ' + APP_VER;
@@ -261,20 +259,20 @@ function exito(u) { try { localStorage.removeItem('fallos_' + u); } catch (e) { 
 
 async function entrar() {
   const m = $('#login-msg'); mensaje(m, 'err', '');
-  if (!userSel) return mensaje(m, 'err', 'Elija un usuario.');
+  if (!userSel) return mensaje(m, 'err', 'No hay usuario configurado.');
   const frase = $('#login-clave').value;
   if (!frase) return mensaje(m, 'err', 'Escriba su clave.');
   const w = espera(userSel); if (w) return mensaje(m, 'err', `Demasiados intentos. Espere ${w} s.`);
   try {
-    busy('Verificando…'); await tick();
+    busy('Procesando…'); await tick();
     const meta = await idbGet('meta', 'meta'); metaCache = meta;
     let raw;
     try { raw = await desenvolver(userSel, frase, meta); }
-    catch (e) { falla(userSel); unbusy(); return mensaje(m, 'err', 'Usuario o clave incorrectos.'); }
+    catch (e) { falla(userSel); unbusy(); return mensaje(m, 'err', 'Clave incorrecta.'); }
     exito(userSel);
     const key = await importarK(raw); raw.fill(0);
     await decJSON(key, meta.control);
-    $('#busy-txt').textContent = 'Descifrando datos…'; await tick();
+    $('#busy-txt').textContent = 'Procesando…'; await tick();
     sesion = { usuario: userSel, key };
     const maestro = await decJSON(key, await idbGet('maestro', 'main'));
     S = nuevoEstado(maestro);
@@ -364,7 +362,7 @@ function alLeer(texto, origen) {
   if (origen === 'camara' && ultimo.codigo === codigo && capturadoEn - ultimo.t < 2500) return;
   ultimo = { codigo, t: capturadoEn };
   reiniciarInactividad();
-  const bien = S.bienes.get(codigo);
+  const bien = S.bienes.get(codigo) || S.bienes.get(S.porInterno.get(normInterno(codigo)));
   if (bien) { señal(bien.Baja === '1' ? 'baja' : 'ok'); abrirFicha(bien, capturadoEn, origen); }
   else { señal('no'); abrirAlta(codigo, capturadoEn, origen); }
 }
@@ -431,7 +429,7 @@ function abrirFicha(bien, capturadoEn, origen) {
   ctx = { tipo: 'bien', bien, capturadoEn, origen };
   $('#ficha-codigo').textContent = bien.IDCodigoAntiguo;
   $('#ficha-baja').hidden = bien.Baja !== '1';
-  const campos = $('#ficha-campos'); campos.replaceChildren(campo('Descripción', bien.Descripcion), campo('Nombre', bien.Nombre), campo('Ubicación', bien.Ubicacion), campo('Ambiente', bien.Ambiente));
+  const campos = $('#ficha-campos'); campos.replaceChildren(...(bien.CodigoInterno ? [campo('Código interno', bien.CodigoInterno)] : []), campo('Descripción', bien.Descripcion), campo('Nombre', bien.Nombre), campo('Ubicación', bien.Ubicacion), campo('Ambiente', bien.Ambiente));
   $('#ficha-cap').textContent = fmt(capturadoEn);
   const prev = $('#ficha-previo');
   prev.textContent = bien.Resultado ? `Ya verificado: ${bien.Resultado} por ${bien.Usuario} el ${fmt(bien.FechaGuardado)}. Si decide de nuevo, se reemplaza el resultado (el historial se conserva).` : '';
@@ -560,17 +558,17 @@ function construirLibro() {
   };
   const f = ms => ms ? serial(ms) : '';
   const bienes = [...S.bienes.values()];
-  const encB = [...COLS, 'Resultado', 'Nombre1', 'Ubicacion1', 'Ambiente1', 'FechaCaptura', 'FechaGuardado', 'Usuario', 'AvisoReloj'];
-  const aoaB = [encB, ...bienes.map(b => [b.IDCodigoAntiguo, b.Descripcion, b.Nombre, b.Ubicacion, b.Ambiente, Number(b.Baja), b.Resultado, b.Nombre1, b.Ubicacion1, b.Ambiente1, f(b.FechaCaptura), f(b.FechaGuardado), b.Usuario, b.AvisoReloj])];
+  const encB = [...COLS, 'CodigoInterno', 'Resultado', 'Nombre1', 'Ubicacion1', 'Ambiente1', 'FechaCaptura', 'FechaGuardado', 'Usuario', 'AvisoReloj'];
+  const aoaB = [encB, ...bienes.map(b => [b.IDCodigoAntiguo, b.Descripcion, b.Nombre, b.Ubicacion, b.Ambiente, Number(b.Baja), b.CodigoInterno, b.Resultado, b.Nombre1, b.Ubicacion1, b.Ambiente1, f(b.FechaCaptura), f(b.FechaGuardado), b.Usuario, b.AvisoReloj])];
   const aoaL = [['Tipo', 'IDCodigoAntiguo', 'Resultado', 'Nombre1', 'Ubicacion1', 'Ambiente1', 'FechaCaptura', 'FechaGuardado', 'Usuario', 'Origen', 'AvisoReloj'],
     ...S.historial.map(x => [x.t === 'alta' ? 'ALTA' : 'DECISION', x.codigo, x.t === 'alta' ? 'SOBRANTE' : x.Resultado, x.t === 'alta' ? x.Nombre : x.Nombre1, x.t === 'alta' ? x.Ubicacion : x.Ubicacion1, x.t === 'alta' ? x.Ambiente : x.Ambiente1, f(x.FechaCaptura), f(x.FechaGuardado), x.Usuario, x.Origen, x.AvisoReloj || ''])];
   const aoaA = [['Codigo', 'Nombre', 'Ubicacion', 'Ambiente', 'FechaCaptura', 'FechaGuardado', 'Usuario', 'Origen', 'FormatoReconocido', 'AvisoReloj'],
     ...S.altas.map(x => [x.codigo, x.Nombre, x.Ubicacion, x.Ambiente, f(x.FechaCaptura), f(x.FechaGuardado), x.Usuario, x.Origen, x.FormatoReconocido, x.AvisoReloj || ''])];
   const aoaF = [COLS, ...bienes.filter(b => !b.Resultado).map(b => [b.IDCodigoAntiguo, b.Descripcion, b.Nombre, b.Ubicacion, b.Ambiente, Number(b.Baja)])];
   const c = contar();
-  const aoaI = [['Campo', 'Valor'], ['Exportado por', sesion.usuario], ['Exportado el', fmt(Date.now())], ['Maestro', S.info.archivo], ['Bienes', c.total], ['Correctos', c.ok], ['Incorrectos', c.mal], ['Faltantes (sin resultado)', c.pend], ['Altas', c.altas], ['Cifrado', 'NO: este archivo está en claro'], ['Versión de la aplicación', APP_VER]];
+  const aoaI = [['Campo', 'Valor'], ['Exportado por', sesion.usuario], ['Exportado el', fmt(Date.now())], ['Maestro', S.info.archivo], ['Bienes', c.total], ['Correctos', c.ok], ['Incorrectos', c.mal], ['Faltantes (sin resultado)', c.pend], ['Altas', c.altas], ['Versión de la aplicación', APP_VER]];
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws(aoaB, [16, 60, 30, 30, 30, 6, 12, 28, 28, 28, 20, 20, 10, 14], [10, 11]), 'Bienes');
+  XLSX.utils.book_append_sheet(wb, ws(aoaB, [16, 60, 30, 30, 30, 6, 14, 12, 28, 28, 28, 20, 20, 10, 14], [11, 12]), 'Bienes');
   XLSX.utils.book_append_sheet(wb, ws(aoaL, [10, 16, 12, 28, 28, 28, 20, 20, 10, 10, 14], [6, 7]), 'Lecturas');
   XLSX.utils.book_append_sheet(wb, ws(aoaA, [16, 28, 28, 28, 20, 20, 10, 10, 10, 14], [4, 5]), 'Altas');
   XLSX.utils.book_append_sheet(wb, ws(aoaF, [16, 60, 30, 30, 30, 6], []), 'Faltantes');
@@ -579,7 +577,7 @@ function construirLibro() {
 }
 function nombreArchivo() { const d = new Date(); return `Inventario_${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}_${p2(d.getHours())}${p2(d.getMinutes())}_${sesion.usuario}.xlsx`; }
 async function confirmarClaro() {
-  return await dialogo('El archivo no va cifrado', el('p', { text: 'El Excel contiene los datos y los nombres en claro. Envíelo solo por un canal acordado y bórrelo del celular cuando ya no se necesite.' }),
+  return await dialogo('Exportar a Excel', el('p', { text: 'El Excel contiene los datos y los nombres tal cual. Envíelo solo por un canal acordado y bórrelo del celular cuando ya no se necesite.' }),
     [{ t: 'Cancelar', v: false, cls: 'sec' }, { t: 'Exportar', v: true }]);
 }
 async function exportar(compartir) {
@@ -613,7 +611,7 @@ async function cambiarClave() {
   if (nueva.value.length < MIN_CLAVE || /^\d+$/.test(nueva.value)) return toast(`La clave debe tener ${MIN_CLAVE}+ caracteres y no ser solo números.`);
   if (nueva.value !== rep.value) return toast('Las claves no coinciden.');
   try {
-    busy('Cambiando clave…'); await tick();
+    busy('Procesando…'); await tick();
     const meta = await idbGet('meta', 'meta');
     let raw; try { raw = await desenvolver(sesion.usuario, vieja, meta); } catch (e) { unbusy(); return toast('La clave actual es incorrecta.'); }
     const sal = crypto.getRandomValues(new Uint8Array(16));
@@ -624,7 +622,7 @@ async function cambiarClave() {
 }
 async function borrarTodo() {
   const frase = await pedirClave('Borrar toda la base', 'Se eliminarán el maestro y todos los registros de este celular. Escriba su clave para continuar.'); if (frase == null) return;
-  try { busy('Verificando…'); await tick(); const meta = await idbGet('meta', 'meta'); (await desenvolver(sesion.usuario, frase, meta)).fill(0); unbusy(); }
+  try { busy('Procesando…'); await tick(); const meta = await idbGet('meta', 'meta'); (await desenvolver(sesion.usuario, frase, meta)).fill(0); unbusy(); }
   catch (e) { unbusy(); return toast('Clave incorrecta.'); }
   const t = el('input', { type: 'text', autocomplete: 'off', placeholder: 'BORRAR' });
   const ok = await dialogo('Confirmar', [el('p', { text: 'Escriba BORRAR para confirmar. Esta acción no se puede deshacer; exporte antes si necesita los datos.' }), t], [{ t: 'Cancelar', v: false, cls: 'sec' }, { t: 'Borrar todo', v: true, cls: 'no' }]);
@@ -678,7 +676,7 @@ function conectar() {
 (async function main() {
   conectar();
   if (!window.crypto || !crypto.subtle) {
-    document.body.replaceChildren(el('main', { class: 'page' }, el('h1', { text: 'Contexto no seguro' }), el('p', { text: 'Esta aplicación necesita HTTPS (o localhost) para usar el cifrado y la cámara. Abra la dirección https:// de la aplicación.' })));
+    document.body.replaceChildren(el('main', { class: 'page' }, el('h1', { text: 'Contexto no seguro' }), el('p', { text: 'Esta aplicación necesita HTTPS (o localhost) para usar la cámara y guardar los datos. Abra la dirección https:// de la aplicación.' })));
     return;
   }
   if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
@@ -686,6 +684,6 @@ function conectar() {
   }
   try {
     const meta = await idbGet('meta', 'meta');
-    if (meta) iniciarLogin(''); else iniciarSetup();
+    if (meta) { usuarioFijo = Object.keys(meta.usuarios)[0]; iniciarLogin(''); } else iniciarSetup();
   } catch (e) { console.error(e); document.body.prepend(el('div', { class: 'msg err', text: 'No se pudo abrir el almacenamiento del navegador: ' + (e.message || e) })); }
 })();
