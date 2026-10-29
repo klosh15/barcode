@@ -1,12 +1,15 @@
 'use strict';
 /* Inventario v5-B · un usuario y una clave por celular · base en IndexedDB */
 
-const APP_VER = '5B-1.2.0';
+const APP_VER = '5B-1.6.0';
 const USUARIOS = ['PAOLO', 'EYMHI', 'JHIMY', 'CARLOS', 'INVITADO'];
 const ITER = 600000;            // iteraciones PBKDF2-SHA256
 const MIN_CLAVE = 10;
 const DB_NAME = 'inventario_v5B';
+const NUEVAS = [['MARCA', 'Marca'], ['MODELO', 'Modelo'], ['TIPO', 'Tipo'], ['COLOR', 'Color'], ['SERIE', 'Serie'], ['DIMENSIONES', 'Dimensiones'], ['OTROS', 'Otros']];   // columnas opcionales de Vista2
 const COLS = ['IDCodigoAntiguo', 'Descripcion', 'Nombre', 'Ubicacion', 'Ambiente', 'Baja'];
+const ESTADOS = ['Bueno', 'Regular', 'Malo', 'Chatarra', 'RAEE'];
+const SITUACIONES = ['Propuesto baja', 'Mantenimiento', 'Sobrantes', 'Disponibles para asignar'];
 const FORMATOS = [
   ['F1 · NN.NNN.NNNN', /^\d{2}\.\d{3}\.\d{4}$/],
   ['F2 · NN.NNN.NNNN.XXX', /^\d{2}\.\d{3}\.\d{4}\.[A-Z]{1,3}$/],
@@ -115,7 +118,7 @@ function nuevoEstado(maestro) {
   const bienes = new Map();
   const porInterno = new Map();
   maestro.bienes.forEach(b => { if (b.CodigoInterno) porInterno.set(normInterno(b.CodigoInterno), b.IDCodigoAntiguo); });
-  maestro.bienes.forEach(b => bienes.set(b.IDCodigoAntiguo, { ...b, Resultado: '', Nombre1: '', Ubicacion1: '', Ambiente1: '', FechaCaptura: 0, FechaGuardado: 0, Usuario: '', AvisoReloj: '' }));
+  maestro.bienes.forEach(b => bienes.set(b.IDCodigoAntiguo, { ...b, Resultado: '', Nombre1: '', Ubicacion1: '', Ambiente1: '', CodigoBarras: '', Condicion: '', Estado: '', Situacion: '', Observaciones: '', FechaCaptura: 0, FechaGuardado: 0, Usuario: '', AvisoReloj: '' }));
   const nombres = new Set(maestro.catalogo.nombres), ubic = new Set(maestro.catalogo.ubicaciones), amb = new Set(maestro.catalogo.ambientes);
   const porUbic = new Map();
   const par = (u, a) => { if (!u || !a) return; if (!porUbic.has(u)) porUbic.set(u, new Set()); porUbic.get(u).add(a); };
@@ -123,14 +126,15 @@ function nuevoEstado(maestro) {
   maestro.catalogo.pares.forEach(([u, a]) => par(u, a));
   const ord = s => [...s].filter(Boolean).sort((a, b) => a.localeCompare(b, 'es'));
   return {
-    bienes, porInterno, info: maestro.info, historial: [], altas: [], ultimaCaptura: 0, relojDudoso: false,
+    bienes, porInterno, porBarra: new Map(), info: maestro.info, historial: [], altas: [], ultimaCaptura: 0, relojDudoso: false,
     cat: { nombres: ord(nombres), ubicaciones: ord(ubic), ambientes: ord(amb), porUbic: new Map([...porUbic].map(([u, s]) => [u, ord(s)])) },
   };
 }
 function aplicar(reg) {
   if (reg.t === 'dec') {
     const b = S.bienes.get(reg.codigo);
-    if (b) Object.assign(b, { Resultado: reg.Resultado, Nombre1: reg.Nombre1, Ubicacion1: reg.Ubicacion1, Ambiente1: reg.Ambiente1, FechaCaptura: reg.FechaCaptura, FechaGuardado: reg.FechaGuardado, Usuario: reg.Usuario, AvisoReloj: reg.AvisoReloj || '' });
+    if (reg.CodigoBarras && reg.CodigoBarras !== reg.codigo) S.porBarra.set(normInterno(reg.CodigoBarras), reg.codigo);
+    if (b) Object.assign(b, { Resultado: reg.Resultado, Nombre1: reg.Nombre1, Ubicacion1: reg.Ubicacion1, Ambiente1: reg.Ambiente1, CodigoBarras: reg.CodigoBarras || b.CodigoBarras, Condicion: reg.Condicion || '', Estado: reg.Estado || '', Situacion: reg.Situacion || '', Observaciones: reg.Observaciones || '', FechaCaptura: reg.FechaCaptura, FechaGuardado: reg.FechaGuardado, Usuario: reg.Usuario, AvisoReloj: reg.AvisoReloj || '' });
   } else if (reg.t === 'alta') S.altas.push(reg);
   S.historial.push(reg);
   if (reg.FechaCaptura > S.ultimaCaptura && reg.Usuario === (sesion && sesion.usuario)) S.ultimaCaptura = reg.FechaCaptura;
@@ -171,7 +175,7 @@ function leerMaestro(buf, nombreArchivo) {
     const fm = formatoDe(codigo); if (fm) formatos[fm] = (formatos[fm] || 0) + 1; else otros.push(codigo);
     let interno = colInt ? String(f[colInt] == null ? '' : f[colInt]).trim() : '';
     if (interno) { const k = normInterno(interno); if (internos.has(k)) { internosRep.push(interno); interno = ''; } else internos.add(k); }
-    bienes.push({ IDCodigoAntiguo: codigo, CodigoInterno: interno, Descripcion: g('Descripcion'), Nombre: g('Nombre'), Ubicacion: g('Ubicacion'), Ambiente: g('Ambiente'), Baja: baja });
+    bienes.push({ IDCodigoAntiguo: codigo, CodigoInterno: interno, Descripcion: g('Descripcion'), ...Object.fromEntries(NUEVAS.map(([c]) => [c, g(c)])), Nombre: g('Nombre'), Ubicacion: g('Ubicacion'), Ambiente: g('Ambiente'), Baja: baja });
   }
   const catalogo = { nombres: [], ubicaciones: [], ambientes: [], pares: [] };
   if (nombreCat) {
@@ -190,7 +194,7 @@ function leerMaestro(buf, nombreArchivo) {
 function pintarResumen(r) {
   const c = $('#setup-resumen'); c.replaceChildren();
   const filas = [['Filas leídas', r.total], ['Bienes cargados', r.bienes.length], ['Con Baja = 1', r.resumen.bajas],
-    ['Duplicados descartados', r.resumen.duplicados.length], ['Filas sin código', r.resumen.vacios], ['Con código interno', r.resumen.conInterno], ['Hoja Catálogo', r.resumen.catalogo ? 'sí' : 'no']];
+    ['Duplicados descartados', r.resumen.duplicados.length], ['Filas sin código', r.resumen.vacios], ['Con código interno', r.resumen.conInterno], ['Con Marca/Modelo/Serie…', r.bienes.filter(b => NUEVAS.some(([c]) => b[c])).length], ['Hoja Catálogo', r.resumen.catalogo ? 'sí' : 'no']];
   const t = el('table'); filas.forEach(([k, v]) => t.append(el('tr', {}, el('td', { text: k }), el('td', { text: String(v) }))));
   c.append(el('h2', { text: r.info.archivo }), t, el('h2', { text: 'Formatos de código' }));
   const tf = el('table'); Object.entries(r.resumen.formatos).forEach(([k, v]) => tf.append(el('tr', {}, el('td', { text: k }), el('td', { text: String(v) }))));
@@ -292,7 +296,7 @@ function reiniciarInactividad() { clearTimeout(tInact); if (sesion) tInact = set
 function bloquear(msg) {
   detenerCamara(); clearTimeout(tInact);
   sesion = null; S = null; ctx = null; metaCache = null;
-  $('#ficha-campos').replaceChildren(); $('#corr-form').replaceChildren(); $('#alta-form').replaceChildren();
+  $('#ficha-campos').replaceChildren(); $('#corr-form').replaceChildren(); $('#alta-form').replaceChildren(); $('#ficha-estado').replaceChildren(); mensaje($('#ficha-msg'), 'err', ''); $('#alta-estado').replaceChildren(); $('#alta-impreso').value = '';
   $('#modal').hidden = true; unbusy();
   iniciarLogin(msg || 'Sesión cerrada.');
 }
@@ -354,6 +358,7 @@ function señal(tipo) {
 }
 
 /* ---------- lectura ---------- */
+function buscarBien(c) { return S.bienes.get(c) || S.bienes.get(S.porInterno.get(normInterno(c))) || S.bienes.get(S.porBarra.get(normInterno(c))); }
 let ultimo = { codigo: '', t: 0 };
 function alLeer(texto, origen) {
   if (!sesion || overlayAbierto()) return;
@@ -362,8 +367,8 @@ function alLeer(texto, origen) {
   if (origen === 'camara' && ultimo.codigo === codigo && capturadoEn - ultimo.t < 2500) return;
   ultimo = { codigo, t: capturadoEn };
   reiniciarInactividad();
-  const bien = S.bienes.get(codigo) || S.bienes.get(S.porInterno.get(normInterno(codigo)));
-  if (bien) { señal(bien.Baja === '1' ? 'baja' : 'ok'); abrirFicha(bien, capturadoEn, origen); }
+  const bien = buscarBien(codigo);
+  if (bien) { señal(bien.Baja === '1' ? 'baja' : 'ok'); abrirFicha(bien, capturadoEn, origen, origen === 'camara' ? codigo : ''); }
   else { señal('no'); abrirAlta(codigo, capturadoEn, origen); }
 }
 
@@ -425,19 +430,23 @@ async function linterna() {
    FICHA
    ============================================================ */
 function campo(k, v, cls) { return el('div', { class: 'field ' + (cls || '') }, el('div', { class: 'k', text: k }), el('div', { class: 'v', text: v || '—' })); }
-function abrirFicha(bien, capturadoEn, origen) {
-  ctx = { tipo: 'bien', bien, capturadoEn, origen };
+function abrirFicha(bien, capturadoEn, origen, barra) {
+  ctx = { tipo: 'bien', bien, capturadoEn, origen, barra: barra || '' };
   $('#ficha-codigo').textContent = bien.IDCodigoAntiguo;
   $('#ficha-baja').hidden = bien.Baja !== '1';
-  const campos = $('#ficha-campos'); campos.replaceChildren(...(bien.CodigoInterno ? [campo('Código interno', bien.CodigoInterno)] : []), campo('Descripción', bien.Descripcion), campo('Nombre', bien.Nombre), campo('Ubicación', bien.Ubicacion), campo('Ambiente', bien.Ambiente));
+  const campos = $('#ficha-campos'); campos.replaceChildren(...(bien.CodigoInterno ? [campo('Código interno', bien.CodigoInterno)] : []), campo('Descripción', bien.Descripcion), ...NUEVAS.filter(([c]) => bien[c]).map(([c, t]) => campo(t, bien[c])), campo('Nombre', bien.Nombre), campo('Ubicación', bien.Ubicacion), campo('Ambiente', bien.Ambiente));
   $('#ficha-cap').textContent = fmt(capturadoEn);
+  const br = $('#ficha-barra'); br.replaceChildren();
+  if (ctx.barra && ctx.barra !== bien.IDCodigoAntiguo) br.append(campo('Código de barras leído', ctx.barra + ' (se asociará a este bien al guardar)'));
+  if (bien.CodigoBarras && ctx.barra && normInterno(bien.CodigoBarras) !== normInterno(ctx.barra)) br.append(el('div', { class: 'msg warn', text: 'Este bien ya tenía asociado otro código de barras: ' + bien.CodigoBarras }));
+  ctx.estadoApi = armarEstado($('#ficha-estado'), bien); mensaje($('#ficha-msg'), 'err', '');
   const prev = $('#ficha-previo');
   prev.textContent = bien.Resultado ? `Ya verificado: ${bien.Resultado} por ${bien.Usuario} el ${fmt(bien.FechaGuardado)}. Si decide de nuevo, se reemplaza el resultado (el historial se conserva).` : '';
   overlay('ficha');
 }
 async function guardarDecision(datos) {
   const { bien, capturadoEn, origen } = ctx;
-  const reg = { t: 'dec', codigo: bien.IDCodigoAntiguo, Resultado: datos.Resultado, Nombre1: datos.Nombre1 || '', Ubicacion1: datos.Ubicacion1 || '', Ambiente1: datos.Ambiente1 || '',
+  const reg = { t: 'dec', codigo: bien.IDCodigoAntiguo, Resultado: datos.Resultado, Nombre1: datos.Nombre1 || '', Ubicacion1: datos.Ubicacion1 || '', Ambiente1: datos.Ambiente1 || '', CodigoBarras: ctx.barra || '', ...ctx.estadoApi.leer(),
     FechaCaptura: capturadoEn, FechaGuardado: Date.now(), Usuario: sesion.usuario, Origen: origen };
   const av = avisoReloj(capturadoEn); if (av) reg.AvisoReloj = av;
   try { await idbAdd('diario', await encJSON(sesion.key, reg)); }
@@ -446,10 +455,29 @@ async function guardarDecision(datos) {
   return true;
 }
 async function correcto() {
-  if (!ctx || ctx.tipo !== 'bien') return;
+  if (!ctx || ctx.tipo !== 'bien' || !ctx.estadoApi.validar($('#ficha-msg'))) return;
   if (await guardarDecision({ Resultado: 'CORRECTO' })) { toast('✔ Correcto guardado'); cerrarYSeguir(); }
 }
 function cerrarYSeguir() { ctx = null; cerrarOverlays(); $('#manual').value = ''; }
+
+/* ---------- condición, estado, situación y observaciones ---------- */
+let seqEst = 0;
+function armarEstado(cont, ini) {
+  const nom = 'cond' + (++seqEst), id = 'est' + seqEst;
+  const rd = v => el('label', { class: 'rd' }, el('input', { type: 'radio', name: nom, value: v, ...(ini.Condicion === v ? { checked: '' } : {}) }), v);
+  const sel = (idc, lista, val) => el('select', { id: idc }, el('option', { value: '', text: 'Seleccione…' }), ...lista.map(x => el('option', { value: x, text: x, ...(x === val ? { selected: '' } : {}) })));
+  const sEst = sel(id + 'e', ESTADOS, ini.Estado), sSit = sel(id + 's', SITUACIONES, ini.Situacion);
+  const obs = el('textarea', { id: id + 'o', maxlength: '500', rows: '3', placeholder: 'Opcional' }); obs.value = ini.Observaciones || '';
+  cont.replaceChildren(
+    el('label', { style: 'margin-top:0', text: 'Condición *' }), el('div', { class: 'row', role: 'radiogroup', 'aria-label': 'Condición' }, rd('USO'), rd('DESUSO')),
+    el('label', { for: id + 'e', text: 'Estado *' }), sEst,
+    el('label', { for: id + 's', text: 'Situación' }), sSit,
+    el('label', { for: id + 'o', text: 'Observaciones' }), obs);
+  const falta = () => { const v = api.leer(); return !v.Condicion ? 'Elija la Condición: USO o DESUSO.' : !v.Estado ? 'Elija el Estado del bien.' : ''; };
+  const api = { validar(msgCont) { const f = falta(); mensaje(msgCont, 'err', f); if (f) (!sEst.value && cont.querySelector('input[type=radio]:checked') ? sEst : cont.querySelector('input[type=radio]')).focus(); return !f; },
+    leer() { const c = cont.querySelector('input[type=radio]:checked'); return { Condicion: c ? c.value : '', Estado: sEst.value, Situacion: sSit.value, Observaciones: obs.value.trim() }; } };
+  return api;
+}
 
 /* ============================================================
    COMBOS (listas con filtro)
@@ -489,6 +517,7 @@ function leerTres(c, msgCont) {
 /* ---------- corrección ---------- */
 let combosCorr = null;
 function abrirCorreccion() {
+  if (!ctx.estadoApi.validar($('#ficha-msg'))) return;
   const b = ctx.bien;
   $('#corr-codigo').textContent = b.IDCodigoAntiguo;
   const f = $('#corr-form'); f.replaceChildren(); mensaje($('#corr-msg'), 'err', '');
@@ -511,6 +540,8 @@ let combosAlta = null;
 function abrirAlta(codigo, capturadoEn, origen) {
   ctx = { tipo: 'alta', codigo, capturadoEn, origen };
   $('#alta-codigo').textContent = codigo;
+  $('#alta-buscar').hidden = origen !== 'camara'; $('#alta-impreso').value = ''; mensaje($('#alta-bmsg'), 'err', '');
+  ctx.estadoApi = armarEstado($('#alta-estado'), { Situacion: 'Sobrantes' });
   const fm = formatoDe(codigo);
   $('#alta-aviso').replaceChildren(fm ? '' : el('div', { class: 'msg warn', text: 'El formato no coincide con ninguno conocido. Verifique que la lectura sea correcta.' }));
   combosAlta = armarCombosTres($('#alta-form'), { Nombre: '', Ubicacion: '', Ambiente: '' });
@@ -518,12 +549,21 @@ function abrirAlta(codigo, capturadoEn, origen) {
   overlay('alta');
 }
 async function guardarAlta() {
-  const m = $('#alta-msg'), v = leerTres(combosAlta, m); if (!v) return;
+  const m = $('#alta-msg'), v = leerTres(combosAlta, m); if (!v || !ctx.estadoApi.validar(m)) return;
   const { codigo, capturadoEn, origen } = ctx;
-  const reg = { t: 'alta', codigo, Nombre: v.n, Ubicacion: v.u, Ambiente: v.a, FechaCaptura: capturadoEn, FechaGuardado: Date.now(), Usuario: sesion.usuario, Origen: origen, FormatoReconocido: formatoDe(codigo) ? 'SI' : 'NO' };
+  const reg = { t: 'alta', codigo, Nombre: v.n, Ubicacion: v.u, Ambiente: v.a, FechaCaptura: capturadoEn, FechaGuardado: Date.now(), Usuario: sesion.usuario, Origen: origen, FormatoReconocido: formatoDe(codigo) ? 'SI' : 'NO', CodigoBarras: origen === 'camara' ? codigo : '', CodigoImpreso: limpiar($('#alta-impreso').value), ...ctx.estadoApi.leer() };
   const av = avisoReloj(capturadoEn); if (av) reg.AvisoReloj = av;
   try { await idbAdd('diario', await encJSON(sesion.key, reg)); } catch (e) { console.error(e); return mensaje(m, 'err', 'No se pudo guardar: ' + (e.message || e)); }
   aplicar(reg); pintarStats(); reiniciarInactividad(); toast('Alta guardada'); cerrarYSeguir();
+}
+
+function buscarImpreso() {
+  const m = $('#alta-bmsg'), v = limpiar($('#alta-impreso').value);
+  if (!v) return mensaje(m, 'err', 'Escriba el código impreso en la etiqueta.');
+  const bien = buscarBien(v);
+  if (!bien) return mensaje(m, 'err', 'El código impreso «' + v + '» no está en la base.');
+  const { codigo, capturadoEn, origen } = ctx;
+  señal(bien.Baja === '1' ? 'baja' : 'ok'); abrirFicha(bien, capturadoEn, origen, codigo);
 }
 
 /* ============================================================
@@ -558,20 +598,20 @@ function construirLibro() {
   };
   const f = ms => ms ? serial(ms) : '';
   const bienes = [...S.bienes.values()];
-  const encB = [...COLS, 'CodigoInterno', 'Resultado', 'Nombre1', 'Ubicacion1', 'Ambiente1', 'FechaCaptura', 'FechaGuardado', 'Usuario', 'AvisoReloj'];
-  const aoaB = [encB, ...bienes.map(b => [b.IDCodigoAntiguo, b.Descripcion, b.Nombre, b.Ubicacion, b.Ambiente, Number(b.Baja), b.CodigoInterno, b.Resultado, b.Nombre1, b.Ubicacion1, b.Ambiente1, f(b.FechaCaptura), f(b.FechaGuardado), b.Usuario, b.AvisoReloj])];
-  const aoaL = [['Tipo', 'IDCodigoAntiguo', 'Resultado', 'Nombre1', 'Ubicacion1', 'Ambiente1', 'FechaCaptura', 'FechaGuardado', 'Usuario', 'Origen', 'AvisoReloj'],
-    ...S.historial.map(x => [x.t === 'alta' ? 'ALTA' : 'DECISION', x.codigo, x.t === 'alta' ? 'SOBRANTE' : x.Resultado, x.t === 'alta' ? x.Nombre : x.Nombre1, x.t === 'alta' ? x.Ubicacion : x.Ubicacion1, x.t === 'alta' ? x.Ambiente : x.Ambiente1, f(x.FechaCaptura), f(x.FechaGuardado), x.Usuario, x.Origen, x.AvisoReloj || ''])];
-  const aoaA = [['Codigo', 'Nombre', 'Ubicacion', 'Ambiente', 'FechaCaptura', 'FechaGuardado', 'Usuario', 'Origen', 'FormatoReconocido', 'AvisoReloj'],
-    ...S.altas.map(x => [x.codigo, x.Nombre, x.Ubicacion, x.Ambiente, f(x.FechaCaptura), f(x.FechaGuardado), x.Usuario, x.Origen, x.FormatoReconocido, x.AvisoReloj || ''])];
-  const aoaF = [COLS, ...bienes.filter(b => !b.Resultado).map(b => [b.IDCodigoAntiguo, b.Descripcion, b.Nombre, b.Ubicacion, b.Ambiente, Number(b.Baja)])];
+  const encB = [...COLS, 'CodigoInterno', 'Resultado', 'Nombre1', 'Ubicacion1', 'Ambiente1', 'FechaCaptura', 'FechaGuardado', 'Usuario', 'AvisoReloj', 'CodigoBarras', 'Condicion', 'Estado', 'Situacion', 'Observaciones', ...NUEVAS.map(([c]) => c)];
+  const aoaB = [encB, ...bienes.map(b => [b.IDCodigoAntiguo, b.Descripcion, b.Nombre, b.Ubicacion, b.Ambiente, Number(b.Baja), b.CodigoInterno, b.Resultado, b.Nombre1, b.Ubicacion1, b.Ambiente1, f(b.FechaCaptura), f(b.FechaGuardado), b.Usuario, b.AvisoReloj, b.CodigoBarras, b.Condicion, b.Estado, b.Situacion, b.Observaciones, ...NUEVAS.map(([c]) => b[c] || '')])];
+  const aoaL = [['Tipo', 'IDCodigoAntiguo', 'Resultado', 'Nombre1', 'Ubicacion1', 'Ambiente1', 'FechaCaptura', 'FechaGuardado', 'Usuario', 'Origen', 'AvisoReloj', 'CodigoBarras', 'Condicion', 'Estado', 'Situacion', 'Observaciones'],
+    ...S.historial.map(x => [x.t === 'alta' ? 'ALTA' : 'DECISION', x.codigo, x.t === 'alta' ? 'SOBRANTE' : x.Resultado, x.t === 'alta' ? x.Nombre : x.Nombre1, x.t === 'alta' ? x.Ubicacion : x.Ubicacion1, x.t === 'alta' ? x.Ambiente : x.Ambiente1, f(x.FechaCaptura), f(x.FechaGuardado), x.Usuario, x.Origen, x.AvisoReloj || '', x.CodigoBarras || '', x.Condicion || '', x.Estado || '', x.Situacion || '', x.Observaciones || ''])];
+  const aoaA = [['Codigo', 'Nombre', 'Ubicacion', 'Ambiente', 'FechaCaptura', 'FechaGuardado', 'Usuario', 'Origen', 'FormatoReconocido', 'AvisoReloj', 'CodigoBarras', 'CodigoImpreso', 'Condicion', 'Estado', 'Situacion', 'Observaciones'],
+    ...S.altas.map(x => [x.codigo, x.Nombre, x.Ubicacion, x.Ambiente, f(x.FechaCaptura), f(x.FechaGuardado), x.Usuario, x.Origen, x.FormatoReconocido, x.AvisoReloj || '', x.CodigoBarras || '', x.CodigoImpreso || '', x.Condicion || '', x.Estado || '', x.Situacion || '', x.Observaciones || ''])];
+  const aoaF = [[...COLS, ...NUEVAS.map(([c]) => c)], ...bienes.filter(b => !b.Resultado).map(b => [b.IDCodigoAntiguo, b.Descripcion, b.Nombre, b.Ubicacion, b.Ambiente, Number(b.Baja), ...NUEVAS.map(([c]) => b[c] || '')])];
   const c = contar();
   const aoaI = [['Campo', 'Valor'], ['Exportado por', sesion.usuario], ['Exportado el', fmt(Date.now())], ['Maestro', S.info.archivo], ['Bienes', c.total], ['Correctos', c.ok], ['Incorrectos', c.mal], ['Faltantes (sin resultado)', c.pend], ['Altas', c.altas], ['Versión de la aplicación', APP_VER]];
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws(aoaB, [16, 60, 30, 30, 30, 6, 14, 12, 28, 28, 28, 20, 20, 10, 14], [11, 12]), 'Bienes');
-  XLSX.utils.book_append_sheet(wb, ws(aoaL, [10, 16, 12, 28, 28, 28, 20, 20, 10, 10, 14], [6, 7]), 'Lecturas');
-  XLSX.utils.book_append_sheet(wb, ws(aoaA, [16, 28, 28, 28, 20, 20, 10, 10, 10, 14], [4, 5]), 'Altas');
-  XLSX.utils.book_append_sheet(wb, ws(aoaF, [16, 60, 30, 30, 30, 6], []), 'Faltantes');
+  XLSX.utils.book_append_sheet(wb, ws(aoaB, [16, 60, 30, 30, 30, 6, 14, 12, 28, 28, 28, 20, 20, 10, 14, 16, 10, 10, 22, 40, 16, 16, 16, 16, 16, 24, 50], [11, 12]), 'Bienes');
+  XLSX.utils.book_append_sheet(wb, ws(aoaL, [10, 16, 12, 28, 28, 28, 20, 20, 10, 10, 14, 16, 10, 10, 22, 40], [6, 7]), 'Lecturas');
+  XLSX.utils.book_append_sheet(wb, ws(aoaA, [16, 28, 28, 28, 20, 20, 10, 10, 10, 14, 16, 16, 10, 10, 22, 40], [4, 5]), 'Altas');
+  XLSX.utils.book_append_sheet(wb, ws(aoaF, [16, 60, 30, 30, 30, 6, 16, 16, 16, 16, 16, 24, 50], []), 'Faltantes');
   XLSX.utils.book_append_sheet(wb, ws(aoaI, [30, 40], []), 'Info');
   return wb;
 }
@@ -664,6 +704,8 @@ function conectar() {
   $('#btn-descartar').addEventListener('click', cerrarYSeguir);
   $('#btn-corr-guardar').addEventListener('click', guardarCorreccion);
   $('#btn-corr-cancelar').addEventListener('click', () => overlay('ficha'));
+  $('#btn-alta-buscar').addEventListener('click', buscarImpreso);
+  $('#alta-impreso').addEventListener('keydown', e => { if (e.key === 'Enter') buscarImpreso(); });
   $('#btn-alta-guardar').addEventListener('click', guardarAlta);
   $('#btn-alta-cancelar').addEventListener('click', cerrarYSeguir);
   $('#btn-export').addEventListener('click', () => exportar(false));

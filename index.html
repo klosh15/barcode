@@ -74,7 +74,7 @@
       <button id="btn-cam" class="btn small">Activar cámara</button>
       <button id="btn-torch" class="btn sec small">Linterna</button>
     </div>
-    <label for="manual">Digitar código (respaldo)</label>
+    <label for="manual">Digitar código impreso (respaldo)</label>
     <div class="row" style="grid-template-columns:1fr auto">
       <input id="manual" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="64.620.0022">
       <button id="btn-manual" class="btn small" style="width:auto">Buscar</button>
@@ -89,7 +89,10 @@
     <div class="muted" id="ficha-previo"></div>
     <div id="ficha-baja" class="baja" hidden>BAJA</div>
     <div class="code" id="ficha-codigo"></div>
+    <div id="ficha-barra"></div>
     <div id="ficha-campos"></div>
+    <div class="card" id="ficha-estado"></div>
+    <div id="ficha-msg"></div>
     <div class="field"><div class="k">Capturado</div><div class="v stamp" id="ficha-cap"></div></div>
     <div style="text-align:center"><button id="btn-descartar" class="link">Descartar lectura sin guardar</button></div>
   </div>
@@ -120,8 +123,18 @@
     <div class="baja" style="background:var(--warn);box-shadow:none;font-size:24px;letter-spacing:.05em">NO ESTÁ EN LA BASE</div>
     <div class="code" id="alta-codigo"></div>
     <div id="alta-aviso"></div>
-    <p class="muted">Registre el bien como sobrante indicando dónde se encontró.</p>
+    <div class="card" id="alta-buscar">
+      <label for="alta-impreso" style="margin-top:0">Código impreso en la etiqueta</label>
+      <p class="muted" style="margin:0 0 6px">Si el código de barras no coincide con el impreso, escriba el impreso para buscarlo en la base y asociarlo.</p>
+      <div class="row" style="grid-template-columns:1fr auto">
+        <input id="alta-impreso" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="64.620.0022">
+        <button id="btn-alta-buscar" class="btn small" style="width:auto">Buscar</button>
+      </div>
+      <div id="alta-bmsg"></div>
+    </div>
+    <p class="muted">Si no existe, registre el bien como sobrante indicando dónde se encontró.</p>
     <div id="alta-form"></div>
+    <div class="card" id="alta-estado"></div>
     <div id="alta-msg"></div>
   </div>
   <div class="sticky-actions"><div class="in row">
