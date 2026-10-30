@@ -1,7 +1,7 @@
 'use strict';
 /* Inventario v5-B · un usuario y una clave por celular · base en IndexedDB */
 
-const APP_VER = '5B-1.6.0';
+const APP_VER = '5B-2.0.0';
 const USUARIOS = ['PAOLO', 'EYMHI', 'JHIMY', 'CARLOS', 'INVITADO'];
 const ITER = 600000;            // iteraciones PBKDF2-SHA256
 const MIN_CLAVE = 10;
@@ -122,14 +122,16 @@ function nuevoEstado(maestro) {
   const nombres = new Set(maestro.catalogo.nombres), ubic = new Set(maestro.catalogo.ubicaciones), amb = new Set(maestro.catalogo.ambientes);
   const porUbic = new Map();
   const par = (u, a) => { if (!u || !a) return; if (!porUbic.has(u)) porUbic.set(u, new Set()); porUbic.get(u).add(a); };
-  maestro.bienes.forEach(b => { nombres.add(b.Nombre); ubic.add(b.Ubicacion); amb.add(b.Ambiente); par(b.Ubicacion, b.Ambiente); });
+  const est = maestro.catalogo.estricto || {};          // con hojas Personal / UbicacionAmbiente las listas salen SOLO de ellas
+  maestro.bienes.forEach(b => { if (!est.nombres) nombres.add(b.Nombre); if (!est.pares) { ubic.add(b.Ubicacion); amb.add(b.Ambiente); par(b.Ubicacion, b.Ambiente); } });
   maestro.catalogo.pares.forEach(([u, a]) => par(u, a));
   const ord = s => [...s].filter(Boolean).sort((a, b) => a.localeCompare(b, 'es'));
   return {
-    bienes, porInterno, porBarra: new Map(), info: maestro.info, historial: [], altas: [], ultimaCaptura: 0, relojDudoso: false,
-    cat: { nombres: ord(nombres), ubicaciones: ord(ubic), ambientes: ord(amb), porUbic: new Map([...porUbic].map(([u, s]) => [u, ord(s)])) },
+    bienes, porInterno, porBarra: new Map(), idxOCR: null, uso: new Map((maestro.catalogo.usos || []).map(([u, a, c]) => [sinTilde(u) + '|' + sinTilde(a), c])), info: maestro.info, historial: [], altas: [], ultimaCaptura: 0, relojDudoso: false,
+    cat: { estricto: !!est.pares, nombres: ord(nombres), ubicaciones: ord(ubic), ambientes: ord(amb), porUbic: new Map([...porUbic].map(([u, s]) => [u, ord(s)])) },
   };
 }
+const usoDe = (u, a) => (S && S.uso.get(sinTilde(u || '') + '|' + sinTilde(a || ''))) || '';     // CONDICION por defecto según UbicacionAmbiente
 function aplicar(reg) {
   if (reg.t === 'dec') {
     const b = S.bienes.get(reg.codigo);
@@ -143,8 +145,8 @@ function aplicar(reg) {
 /* ---------- páginas ---------- */
 const PAGINAS = ['setup', 'login', 'main'], OVERLAYS = ['ficha', 'corr', 'alta', 'menu'];
 function pagina(p) { PAGINAS.forEach(x => $('#p-' + x).hidden = x !== p); cerrarOverlays(); }
-function overlay(o) { OVERLAYS.forEach(x => $('#o-' + x).hidden = x !== o); if (o) $('#o-' + o).scrollTop = 0; }
-function cerrarOverlays() { OVERLAYS.forEach(x => $('#o-' + x).hidden = true); }
+function overlay(o) { OVERLAYS.forEach(x => $('#o-' + x).hidden = x !== o); if (o) { $('#o-' + o).scrollTop = 0; pausarLector(); } else reanudarLector(); }
+function cerrarOverlays() { OVERLAYS.forEach(x => $('#o-' + x).hidden = true); reanudarLector(); }
 const overlayAbierto = () => OVERLAYS.some(x => !$('#o-' + x).hidden) || !$('#modal').hidden || !$('#busy').hidden;
 
 /* ============================================================
@@ -155,7 +157,9 @@ let maestroCargado = null, setupUser = null, usuarioFijo = null;
 function leerMaestro(buf, nombreArchivo) {
   const wb = /.csv$/i.test(nombreArchivo) ? XLSX.read(td.decode(buf), { type: 'string' }) : XLSX.read(buf, { type: 'array' });
   const nombreCat = wb.SheetNames.find(n => /^catalog/i.test(n.trim()));
-  const nombreBienes = wb.SheetNames.find(n => n !== nombreCat);
+  const nombrePers = wb.SheetNames.find(n => sinTilde(n) === 'personal');
+  const nombreUA = wb.SheetNames.find(n => sinTilde(n) === 'ubicacionambiente');
+  const nombreBienes = wb.SheetNames.find(n => n !== nombreCat && n !== nombrePers && n !== nombreUA);
   if (!nombreBienes) throw new Error('El archivo no tiene hojas con datos.');
   const filas = XLSX.utils.sheet_to_json(wb.Sheets[nombreBienes], { defval: '', raw: false });
   if (!filas.length) throw new Error('La hoja «' + nombreBienes + '» está vacía.');
@@ -188,13 +192,28 @@ function leerMaestro(buf, nombreArchivo) {
       if (m.ubicacion && m.ambiente) catalogo.pares.push([m.ubicacion, m.ambiente]);
     });
   }
-  return { bienes, catalogo, info: { archivo: nombreArchivo, filas: bienes.length, cargadoEn: Date.now() }, resumen: { conInterno: internos.size, internosRep, total: filas.length, vacios, duplicados, formatos, otros, bajaRara, bajas: bienes.filter(b => b.Baja === '1').length, catalogo: !!nombreCat } };
+  // Hoja Personal → lista de Nombre. Hoja UbicacionAmbiente → pares Ubicación/Ambiente y la CONDICION (USO/DESUSO) por defecto.
+  const hojaFilas = nom => XLSX.utils.sheet_to_json(wb.Sheets[nom], { defval: '', raw: false }).map(r => { const m = {}; Object.keys(r).forEach(h => { m[sinTilde(h)] = String(r[h]).trim(); }); return m; });
+  const usos = [], parUA = new Set(), personal = new Set();
+  let usoRaro = 0;
+  if (nombrePers) hojaFilas(nombrePers).forEach(m => { if (m.nombre) { catalogo.nombres.push(m.nombre); personal.add(m.nombre); } });
+  if (nombreUA) hojaFilas(nombreUA).forEach(m => {
+    if (!m.ubicacion || !m.ambiente) return;
+    catalogo.ubicaciones.push(m.ubicacion); catalogo.ambientes.push(m.ambiente); catalogo.pares.push([m.ubicacion, m.ambiente]); parUA.add(m.ubicacion + '|' + m.ambiente);
+    const c = sinTilde(m.condicion || m.uso || '');
+    if (c === 'uso' || c === 'desuso') usos.push([m.ubicacion, m.ambiente, c.toUpperCase()]); else if (c) usoRaro++;
+  });
+  catalogo.usos = usos; catalogo.estricto = { nombres: personal.size > 0, pares: parUA.size > 0 };
+  const fueraPersonal = personal.size ? bienes.filter(b => b.Nombre && !personal.has(b.Nombre)).length : 0;
+  const fueraUA = parUA.size ? bienes.filter(b => !parUA.has(b.Ubicacion + '|' + b.Ambiente)).length : 0;
+  return { bienes, catalogo, info: { archivo: nombreArchivo, filas: bienes.length, cargadoEn: Date.now() }, resumen: { conInterno: internos.size, internosRep, total: filas.length, vacios, duplicados, formatos, otros, bajaRara, bajas: bienes.filter(b => b.Baja === '1').length, catalogo: !!nombreCat, personal: personal.size, pares: parUA.size, conUso: usos.length, usoRaro, fueraPersonal, fueraUA } };
 }
 
 function pintarResumen(r) {
   const c = $('#setup-resumen'); c.replaceChildren();
   const filas = [['Filas leídas', r.total], ['Bienes cargados', r.bienes.length], ['Con Baja = 1', r.resumen.bajas],
-    ['Duplicados descartados', r.resumen.duplicados.length], ['Filas sin código', r.resumen.vacios], ['Con código interno', r.resumen.conInterno], ['Con Marca/Modelo/Serie…', r.bienes.filter(b => NUEVAS.some(([c]) => b[c])).length], ['Hoja Catálogo', r.resumen.catalogo ? 'sí' : 'no']];
+    ['Duplicados descartados', r.resumen.duplicados.length], ['Filas sin código', r.resumen.vacios], ['Con código interno', r.resumen.conInterno], ['Con Marca/Modelo/Serie…', r.bienes.filter(b => NUEVAS.some(([c]) => b[c])).length], ['Hoja Catálogo', r.resumen.catalogo ? 'sí' : 'no'],
+    ['Hoja Personal', r.resumen.personal ? r.resumen.personal + ' nombres' : 'no'], ['Hoja UbicacionAmbiente', r.resumen.pares ? r.resumen.pares + ' pares · ' + r.resumen.conUso + ' con CONDICION' : 'no']];
   const t = el('table'); filas.forEach(([k, v]) => t.append(el('tr', {}, el('td', { text: k }), el('td', { text: String(v) }))));
   c.append(el('h2', { text: r.info.archivo }), t, el('h2', { text: 'Formatos de código' }));
   const tf = el('table'); Object.entries(r.resumen.formatos).forEach(([k, v]) => tf.append(el('tr', {}, el('td', { text: k }), el('td', { text: String(v) }))));
@@ -202,6 +221,10 @@ function pintarResumen(r) {
   c.append(tf);
   if (r.resumen.duplicados.length) c.append(el('div', { class: 'msg warn', text: 'Códigos duplicados (se conservó el primero): ' + r.resumen.duplicados.slice(0, 8).join(', ') }));
   if (r.resumen.internosRep.length) c.append(el('div', { class: 'msg warn', text: 'Códigos internos repetidos (se conservó el primero): ' + r.resumen.internosRep.slice(0, 8).join(', ') }));
+  if (r.resumen.pares && !r.resumen.conUso) c.append(el('div', { class: 'msg warn', text: 'La hoja UbicacionAmbiente no trae la columna CONDICION (USO o DESUSO): no se sugerirá la Condición.' }));
+  if (r.resumen.usoRaro) c.append(el('div', { class: 'msg warn', text: r.resumen.usoRaro + ' filas de UbicacionAmbiente tienen una CONDICION distinta de USO o DESUSO; se ignoraron.' }));
+  if (r.resumen.fueraPersonal) c.append(el('div', { class: 'msg warn', text: r.resumen.fueraPersonal + ' bienes tienen un Nombre que no está en la hoja Personal.' }));
+  if (r.resumen.fueraUA) c.append(el('div', { class: 'msg warn', text: r.resumen.fueraUA + ' bienes tienen una Ubicación/Ambiente que no está en la hoja UbicacionAmbiente.' }));
   if (r.resumen.bajaRara) c.append(el('div', { class: 'msg warn', text: r.resumen.bajaRara + ' filas con Baja distinta de 0 o 1; se trataron como 0.' }));
 }
 
@@ -360,7 +383,7 @@ function señal(tipo) {
 /* ---------- lectura ---------- */
 function buscarBien(c) { return S.bienes.get(c) || S.bienes.get(S.porInterno.get(normInterno(c))) || S.bienes.get(S.porBarra.get(normInterno(c))); }
 let ultimo = { codigo: '', t: 0 };
-function alLeer(texto, origen) {
+function alLeer(texto, origen, extra) {
   if (!sesion || overlayAbierto()) return;
   const capturadoEn = Date.now();
   const codigo = limpiar(texto); if (!codigo) return;
@@ -369,16 +392,157 @@ function alLeer(texto, origen) {
   reiniciarInactividad();
   const bien = buscarBien(codigo);
   if (bien) { señal(bien.Baja === '1' ? 'baja' : 'ok'); abrirFicha(bien, capturadoEn, origen, origen === 'camara' ? codigo : ''); }
+  else if (origen === 'camara') leerImpresoYAbrir(codigo, capturadoEn, capturarFrame(extra && extra.bbox));
   else { señal('no'); abrirAlta(codigo, capturadoEn, origen); }
 }
 
+/* ---------- lectura del código impreso bajo las barras (OCR local, sin internet) ---------- */
+const OCR_DIR = 'lib/tesseract/';
+let ocrCargando = null;
+const cargarScript = src => new Promise((ok, ko) => { const t = el('script', { src }); t.onload = ok; t.onerror = () => ko(new Error('No se pudo cargar ' + src)); document.head.append(t); });
+function ocrTrabajador() {
+  if (!ocrCargando) ocrCargando = (async () => {
+    if (!window.Tesseract) await cargarScript(OCR_DIR + 'tesseract.min.js');
+    const abs = p => new URL(p, location.href).href;
+    const w = await Tesseract.createWorker('eng', 1, { workerPath: abs(OCR_DIR + 'worker.min.js'), corePath: abs(OCR_DIR), langPath: abs(OCR_DIR), gzip: true, cacheMethod: 'none' });
+    await w.setParameters({ tessedit_char_whitelist: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ.-*', tessedit_pageseg_mode: '11' });
+    return w;
+  })().catch(e => { ocrCargando = null; throw e; });
+  return ocrCargando;
+}
+function capturarFrame(bbox) {          // lista de lienzos a probar: primero la franja bajo las barras y luego el cuadro completo
+  const v = $('#video'); if (!v.videoWidth || v.readyState < 2) return [];
+  const full = el('canvas'); full.width = v.videoWidth; full.height = v.videoHeight; full.getContext('2d').drawImage(v, 0, 0);
+  const lista = [];
+  if (bbox && bbox.width > 20 && bbox.height > 5) {
+    const x = Math.max(0, bbox.x - bbox.width * 0.15), y = Math.min(full.height - 2, bbox.y + bbox.height * 0.45);
+    const w = Math.min(full.width - x, bbox.width * 1.3), h = Math.min(full.height - y, bbox.height * 1.6 + 40);
+    const c = el('canvas'); c.width = Math.round(w); c.height = Math.round(h); c.getContext('2d').drawImage(full, x, y, w, h, 0, 0, c.width, c.height); lista.push(c);
+  }
+  lista.push(full); return lista;
+}
+function prepararOCR(origen) {          // gris + estiramiento de contraste (2 %–98 %); amplía las franjas pequeñas
+  const esc = Math.max(1, Math.min(3, 1000 / origen.width));
+  const c = el('canvas'); c.width = Math.round(origen.width * esc); c.height = Math.round(origen.height * esc);
+  const g = c.getContext('2d', { willReadFrequently: true }); g.imageSmoothingQuality = 'high'; g.drawImage(origen, 0, 0, c.width, c.height);
+  const im = g.getImageData(0, 0, c.width, c.height), d = im.data, h = new Uint32Array(256), n = d.length / 4;
+  for (let i = 0; i < d.length; i += 4) { const y = (d[i] * 299 + d[i + 1] * 587 + d[i + 2] * 114) / 1000 | 0; d[i] = y; h[y]++; }
+  let a = 0, lo = 0, hi = 255;
+  for (; lo < 255 && (a += h[lo]) < n * 0.02; lo++);
+  a = 0; for (; hi > 0 && (a += h[hi]) < n * 0.02; hi--);
+  const k = hi > lo ? 255 / (hi - lo) : 1;
+  for (let i = 0; i < d.length; i += 4) { const y = Math.max(0, Math.min(255, (d[i] - lo) * k)); d[i] = d[i + 1] = d[i + 2] = y; d[i + 3] = 255; }
+  g.putImageData(im, 0, 0); return c;
+}
+const CONFUSOS = { O: '0', Q: '0', I: '1', L: '1', S: '5', B: '8', Z: '2', G: '6' };       // letras que el OCR confunde con dígitos
+const claveOCR = t => limpiar(t).replace(/[^A-Z0-9]/g, '').replace(/[OQILSBZG]/g, c => CONFUSOS[c]);
+function indiceOCR() { if (!S.idxOCR) { const m = new Map(); S.bienes.forEach((b, id) => { const k = claveOCR(id); if (!m.has(k)) m.set(k, []); m.get(k).push(id); }); S.idxOCR = m; } return S.idxOCR; }
+function buscarEnTexto(texto) {         // devuelve { bien, leido, exacto } o null
+  const toks = [...new Set(String(texto).toUpperCase().split(/[\s,;:|]+/).map(t => t.replace(/^[^A-Z0-9*]+|[^A-Z0-9*]+$/g, '')).filter(t => t.length >= 3))];
+  for (const t of toks) { const b = buscarBien(t); if (b) return { bien: b, leido: t, exacto: true }; }
+  const idx = indiceOCR(), cand = [...toks, ...toks.slice(1).map((t, i) => toks[i] + t)];
+  const variantes = cand.flatMap(t => [t, t.slice(1), t.slice(0, -1)]);                   // el OCR a veces pega un carácter sobrante de las barras
+  for (const t of variantes) { const k = claveOCR(t); if (k.length < 5) continue; const ids = idx.get(k); if (ids && ids.length === 1) return { bien: S.bienes.get(ids[0]), leido: t, exacto: false }; }
+  return null;
+}
+function franjasTexto(cv) {            // franjas horizontales con tinta que no son barras: candidatas a línea de texto impreso
+  const esc = Math.min(1, 800 / cv.width), w = Math.max(1, Math.round(cv.width * esc)), h = Math.max(1, Math.round(cv.height * esc));
+  const c = el('canvas'); c.width = w; c.height = h;
+  const g = c.getContext('2d', { willReadFrequently: true }); g.drawImage(cv, 0, 0, w, h);
+  const d = g.getImageData(0, 0, w, h).data, gris = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) gris[i] = (d[i * 4] * 299 + d[i * 4 + 1] * 587 + d[i * 4 + 2] * 114) / 1000 | 0;
+  const W = w + 1, ii = new Float64Array(W * (h + 1));                  // imagen integral: media local rápida
+  for (let y = 0; y < h; y++) { let acc = 0; for (let x = 0; x < w; x++) { acc += gris[y * w + x]; ii[(y + 1) * W + x + 1] = ii[y * W + x + 1] + acc; } }
+  const r = 12, fila = new Float32Array(h), x0 = new Int32Array(h).fill(w), x1 = new Int32Array(h).fill(-1), tinta = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const ya = Math.max(0, y - r), yb = Math.min(h, y + r + 1); let n = 0;
+    for (let x = 0; x < w; x++) {
+      const xa = Math.max(0, x - r), xb = Math.min(w, x + r + 1);
+      const media = (ii[yb * W + xb] - ii[ya * W + xb] - ii[yb * W + xa] + ii[ya * W + xa]) / ((xb - xa) * (yb - ya));
+      const xs = Math.max(0, x - 1), xe = Math.min(w, x + 2), ys = Math.max(0, y - 1), ye = Math.min(h, y + 2);       // media 3×3: el ruido de la cámara no cuenta como tinta
+      const suave = (ii[ye * W + xe] - ii[ys * W + xe] - ii[ye * W + xs] + ii[ys * W + xs]) / ((xe - xs) * (ye - ys));
+      if (suave < media - 25) { n++; tinta[y * w + x] = 1; if (x < x0[y]) x0[y] = x; x1[y] = x; }      // tinta = más oscuro que su entorno
+    }
+    fila[y] = n >= 3 ? n / (x1[y] - x0[y] + 1) : 0;                      // densidad de tinta respecto al ancho real de la fila
+  }
+  for (let y = 6; y < h; y++) {                                          // fila de barras: densa y casi idéntica a la de 6 filas más arriba (las barras son verticales; el texto no)
+    if (fila[y] < 0.25) continue;
+    let tot = 0, igual = 0;
+    for (let x = x0[y]; x <= x1[y]; x++) if (tinta[y * w + x]) { tot++; const o = (y - 6) * w + x; if (tinta[o] || (x > 0 && tinta[o - 1]) || (x < w - 1 && tinta[o + 1])) igual++; }
+    if (tot && igual / tot > 0.85) fila[y] = -1;
+  }
+  const bandas = []; let ini = -1, hueco = 0;
+  for (let y = 0; y <= h; y++) {
+    const hayTinta = y < h && fila[y] > 0.08;
+    if (hayTinta) { if (ini < 0) ini = y; hueco = 0; }
+    else if (ini >= 0 && (++hueco > 2 || y === h)) { bandas.push([ini, y - hueco]); ini = -1; hueco = 0; }
+  }
+  const salida = [];
+  for (const [a, b] of bandas) {
+    const alto = b - a + 1; if (alto < 8 || alto > h * 0.5) continue;
+    let media = 0, xa = w, xb = -1; for (let y = a; y <= b; y++) { media += Math.max(0, fila[y]); xa = Math.min(xa, x0[y]); xb = Math.max(xb, x1[y]); }
+    media /= alto; if (media > 0.3 && alto > 30) continue;                 // barras: muy densas y altas
+    if ((xb - xa) < w * 0.1) continue;
+    const m = Math.round(alto * 0.35), y = Math.max(0, a - m), yh = Math.min(h, b + m + 1), xi = Math.max(0, xa - m * 2), xf = Math.min(w, xb + m * 2 + 1);
+    const o = el('canvas'); o.width = Math.round((xf - xi) / esc); o.height = Math.round((yh - y) / esc);
+    o.getContext('2d').drawImage(cv, xi / esc, y / esc, o.width, o.height, 0, 0, o.width, o.height); salida.push(o);
+    if (salida.length >= 5) break;
+  }
+  return salida;
+}
+async function ocrBuscar(lienzos) {
+  const w = await ocrTrabajador(), lecturas = [];
+
+  const leer = async (cv, psm) => {
+    await w.setParameters({ tessedit_pageseg_mode: psm });
+    const { data } = await w.recognize(prepararOCR(cv));
+    lecturas.push(data.text.replace(/\s+/g, ' ').trim());
+    return buscarEnTexto(data.text);
+  };
+  for (const cv of lienzos) {                              // 1) cada franja de texto como línea suelta  2) el lienzo completo como texto disperso
+    for (const f of franjasTexto(cv)) { const r = await leer(f, '7'); if (r) return { ...r, lecturas }; }
+    const r = await leer(cv, '11'); if (r) return { ...r, lecturas };
+  }
+  return { bien: null, lecturas };
+}
+async function leerImpresoYAbrir(codigo, capturadoEn, lienzos) {
+  if (!lienzos.length) { señal('no'); return abrirAlta(codigo, capturadoEn, 'camara'); }
+  busy('Leyendo el código impreso…'); pausarLector();
+  let r; try { r = await ocrBuscar(lienzos); } catch (e) { console.warn('OCR:', e); r = { bien: null, lecturas: [] }; }
+  unbusy();
+  if (!sesion) return;
+  if (r.bien) { señal(r.bien.Baja === '1' ? 'baja' : 'ok'); abrirFicha(r.bien, capturadoEn, 'camara', codigo, r); }
+  else { señal('no'); abrirAlta(codigo, capturadoEn, 'camara', r.lecturas); }
+}
+async function leerImpresoManual() {     // botón «Leer texto impreso»: sin código de barras previo
+  if (!sesion || overlayAbierto()) return;
+  const lienzos = capturarFrame(null); if (!lienzos.length) return toast('Active la cámara y apunte al texto impreso');
+  const capturadoEn = Date.now(); busy('Leyendo el código impreso…'); pausarLector();
+  let r; try { r = await ocrBuscar(lienzos); } catch (e) { console.warn('OCR:', e); r = { bien: null, lecturas: [] }; }
+  unbusy(); if (!sesion) return;
+  if (r.bien) { señal(r.bien.Baja === '1' ? 'baja' : 'ok'); mensaje($('#main-aviso'), 'info', ''); abrirFicha(r.bien, capturadoEn, 'ocr', '', r); }
+  else { reanudarLector(); señal('no'); toast('No se reconoció un código de la base'); mensaje($('#main-aviso'), 'info', r.lecturas.some(Boolean) ? 'Texto leído: ' + r.lecturas.filter(Boolean).join(' · ').slice(0, 160) : 'No se leyó texto. Acerque la cámara al código impreso y enfoque.'); }
+}
+async function leerImpresoDesdeAlta() {  // en «No está en la base»: vuelve a leer el texto impreso con el cuadro actual de la cámara
+  const m = $('#alta-bmsg'), lienzos = capturarFrame(null);
+  if (!lienzos.length) return mensaje(m, 'err', 'La cámara no está activa.');
+  busy('Leyendo el código impreso…');
+  let r; try { r = await ocrBuscar(lienzos); } catch (e) { console.warn('OCR:', e); r = { bien: null, lecturas: [] }; }
+  unbusy();
+  if (r.bien) { $('#alta-impreso').value = r.bien.IDCodigoAntiguo; buscarImpreso(); }
+  else mensaje(m, 'err', r.lecturas.some(Boolean) ? 'No coincide con la base. Texto leído: ' + r.lecturas.filter(Boolean).join(' · ').slice(0, 160) : 'No se leyó texto. Acerque la cámara al código impreso.');
+}
+
 /* ---------- cámara ---------- */
-let stream = null, detector = null, timerDet = null, reader = null, torchOn = false;
+let stream = null, detector = null, timerDet = null, reader = null, torchOn = false, lectorPausado = false;
+const alResultadoZX = res => { if (res) alLeer(res.getText(), 'camara'); };
+function pausarLector() { if (reader && !lectorPausado) { lectorPausado = true; try { reader.stopContinuousDecode(); } catch (e) { /* sin lector */ } } }     // ZXing decodifica sin parar: se detiene mientras hay una ficha u OCR en pantalla
+function reanudarLector() { if (reader && lectorPausado) { lectorPausado = false; try { reader.decodeContinuously($('#video'), alResultadoZX); } catch (e) { /* se reabrirá al activar la cámara */ } } }
 const FMT_BD = ['code_128', 'code_39', 'code_93', 'codabar', 'itf', 'ean_13', 'ean_8', 'upc_a', 'qr_code', 'data_matrix'];
 function pistaVideo() { const v = $('#video').srcObject; return v && v.getVideoTracks && v.getVideoTracks()[0]; }
 function detenerCamara() {
   clearInterval(timerDet); timerDet = null;
-  if (reader) { try { reader.reset(); } catch (e) { /* ya detenido */ } reader = null; }
+  if (reader) { try { reader.reset(); } catch (e) { /* ya detenido */ } reader = null; } lectorPausado = false;
   if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
   const v = $('#video'); if (v.srcObject) { v.srcObject.getTracks && v.srcObject.getTracks().forEach(t => t.stop()); v.srcObject = null; }
   torchOn = false; $('#cam-hint').textContent = 'Cámara apagada'; $('#btn-cam').textContent = 'Activar cámara';
@@ -395,13 +559,13 @@ async function iniciarCamara() {
       try { const sop = await BarcodeDetector.getSupportedFormats(); const f = FMT_BD.filter(x => sop.includes(x)); if (f.length) detector = new BarcodeDetector({ formats: f }); } catch (e) { detector = null; }
     }
     if (detector) {
-      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false });
       video.srcObject = stream; await video.play();
       let ocupado = false;
       timerDet = setInterval(async () => {
         if (ocupado || video.readyState < 2 || overlayAbierto()) return;
         ocupado = true;
-        try { const r = await detector.detect(video); if (r.length) alLeer(r[0].rawValue, 'camara'); } catch (e) { /* cuadro sin código */ }
+        try { const r = await detector.detect(video); if (r.length) alLeer(r[0].rawValue, 'camara', { bbox: r[0].boundingBox }); } catch (e) { /* cuadro sin código */ }
         ocupado = false;
       }, 150);
     } else {
@@ -409,7 +573,7 @@ async function iniciarCamara() {
       hints.set(Z.DecodeHintType.POSSIBLE_FORMATS, [Z.BarcodeFormat.CODE_128, Z.BarcodeFormat.CODE_39, Z.BarcodeFormat.CODE_93, Z.BarcodeFormat.CODABAR, Z.BarcodeFormat.ITF, Z.BarcodeFormat.EAN_13, Z.BarcodeFormat.EAN_8, Z.BarcodeFormat.UPC_A, Z.BarcodeFormat.QR_CODE, Z.BarcodeFormat.DATA_MATRIX]);
       hints.set(Z.DecodeHintType.TRY_HARDER, true);
       reader = new Z.BrowserMultiFormatReader(hints, 200);
-      await reader.decodeFromConstraints({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false }, video, (res) => { if (res) alLeer(res.getText(), 'camara'); });
+      await reader.decodeFromConstraints({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false }, video, alResultadoZX);
     }
     hint.textContent = 'Apunte al código de barras'; $('#btn-cam').textContent = 'Detener cámara'; camQuiere = true;
   } catch (e) {
@@ -430,8 +594,8 @@ async function linterna() {
    FICHA
    ============================================================ */
 function campo(k, v, cls) { return el('div', { class: 'field ' + (cls || '') }, el('div', { class: 'k', text: k }), el('div', { class: 'v', text: v || '—' })); }
-function abrirFicha(bien, capturadoEn, origen, barra) {
-  ctx = { tipo: 'bien', bien, capturadoEn, origen, barra: barra || '' };
+function abrirFicha(bien, capturadoEn, origen, barra, impreso) {
+  ctx = { tipo: 'bien', bien, capturadoEn, origen, barra: barra || '', impreso: impreso && impreso.leido ? impreso : null };
   $('#ficha-codigo').textContent = bien.IDCodigoAntiguo;
   $('#ficha-baja').hidden = bien.Baja !== '1';
   const campos = $('#ficha-campos'); campos.replaceChildren(...(bien.CodigoInterno ? [campo('Código interno', bien.CodigoInterno)] : []), campo('Descripción', bien.Descripcion), ...NUEVAS.filter(([c]) => bien[c]).map(([c, t]) => campo(t, bien[c])), campo('Nombre', bien.Nombre), campo('Ubicación', bien.Ubicacion), campo('Ambiente', bien.Ambiente));
@@ -439,14 +603,15 @@ function abrirFicha(bien, capturadoEn, origen, barra) {
   const br = $('#ficha-barra'); br.replaceChildren();
   if (ctx.barra && ctx.barra !== bien.IDCodigoAntiguo) br.append(campo('Código de barras leído', ctx.barra + ' (se asociará a este bien al guardar)'));
   if (bien.CodigoBarras && ctx.barra && normInterno(bien.CodigoBarras) !== normInterno(ctx.barra)) br.append(el('div', { class: 'msg warn', text: 'Este bien ya tenía asociado otro código de barras: ' + bien.CodigoBarras }));
-  ctx.estadoApi = armarEstado($('#ficha-estado'), bien); mensaje($('#ficha-msg'), 'err', '');
+  if (ctx.impreso) br.append(campo('Código impreso leído por la cámara', ctx.impreso.leido + (ctx.impreso.exacto ? '' : ' (corregido a ' + bien.IDCodigoAntiguo + ')')));
+  ctx.estadoApi = armarEstado($('#ficha-estado'), bien, usoDe(bien.Ubicacion, bien.Ambiente)); mensaje($('#ficha-msg'), 'err', '');
   const prev = $('#ficha-previo');
   prev.textContent = bien.Resultado ? `Ya verificado: ${bien.Resultado} por ${bien.Usuario} el ${fmt(bien.FechaGuardado)}. Si decide de nuevo, se reemplaza el resultado (el historial se conserva).` : '';
   overlay('ficha');
 }
 async function guardarDecision(datos) {
   const { bien, capturadoEn, origen } = ctx;
-  const reg = { t: 'dec', codigo: bien.IDCodigoAntiguo, Resultado: datos.Resultado, Nombre1: datos.Nombre1 || '', Ubicacion1: datos.Ubicacion1 || '', Ambiente1: datos.Ambiente1 || '', CodigoBarras: ctx.barra || '', ...ctx.estadoApi.leer(),
+  const reg = { t: 'dec', codigo: bien.IDCodigoAntiguo, Resultado: datos.Resultado, Nombre1: datos.Nombre1 || '', Ubicacion1: datos.Ubicacion1 || '', Ambiente1: datos.Ambiente1 || '', CodigoBarras: ctx.barra || '', CodigoImpreso: ctx.impreso ? ctx.impreso.leido : '', ...ctx.estadoApi.leer(),
     FechaCaptura: capturadoEn, FechaGuardado: Date.now(), Usuario: sesion.usuario, Origen: origen };
   const av = avisoReloj(capturadoEn); if (av) reg.AvisoReloj = av;
   try { await idbAdd('diario', await encJSON(sesion.key, reg)); }
@@ -462,19 +627,23 @@ function cerrarYSeguir() { ctx = null; cerrarOverlays(); $('#manual').value = ''
 
 /* ---------- condición, estado, situación y observaciones ---------- */
 let seqEst = 0;
-function armarEstado(cont, ini) {
+function armarEstado(cont, ini, sugerida) {
   const nom = 'cond' + (++seqEst), id = 'est' + seqEst;
-  const rd = v => el('label', { class: 'rd' }, el('input', { type: 'radio', name: nom, value: v, ...(ini.Condicion === v ? { checked: '' } : {}) }), v);
+  let tocado = !!ini.Condicion;                         // si el usuario ya eligió (o el bien ya tenía), no se vuelve a sugerir
+  const inicial = ini.Condicion || sugerida || '';
+  const pista = el('div', { class: 'muted', text: !ini.Condicion && sugerida ? 'Sugerida según el ambiente.' : '' });
+  const rd = v => el('label', { class: 'rd' }, el('input', { type: 'radio', name: nom, value: v, onchange: () => { tocado = true; pista.textContent = ''; }, ...(inicial === v ? { checked: '' } : {}) }), v);
   const sel = (idc, lista, val) => el('select', { id: idc }, el('option', { value: '', text: 'Seleccione…' }), ...lista.map(x => el('option', { value: x, text: x, ...(x === val ? { selected: '' } : {}) })));
-  const sEst = sel(id + 'e', ESTADOS, ini.Estado), sSit = sel(id + 's', SITUACIONES, ini.Situacion);
+  const sEst = sel(id + 'e', ESTADOS, ini.Estado || 'Bueno'), sSit = sel(id + 's', SITUACIONES, ini.Situacion);
   const obs = el('textarea', { id: id + 'o', maxlength: '500', rows: '3', placeholder: 'Opcional' }); obs.value = ini.Observaciones || '';
   cont.replaceChildren(
-    el('label', { style: 'margin-top:0', text: 'Condición *' }), el('div', { class: 'row', role: 'radiogroup', 'aria-label': 'Condición' }, rd('USO'), rd('DESUSO')),
+    el('label', { style: 'margin-top:0', text: 'Condición *' }), el('div', { class: 'row', role: 'radiogroup', 'aria-label': 'Condición' }, rd('USO'), rd('DESUSO')), pista,
     el('label', { for: id + 'e', text: 'Estado *' }), sEst,
     el('label', { for: id + 's', text: 'Situación' }), sSit,
     el('label', { for: id + 'o', text: 'Observaciones' }), obs);
   const falta = () => { const v = api.leer(); return !v.Condicion ? 'Elija la Condición: USO o DESUSO.' : !v.Estado ? 'Elija el Estado del bien.' : ''; };
   const api = { validar(msgCont) { const f = falta(); mensaje(msgCont, 'err', f); if (f) (!sEst.value && cont.querySelector('input[type=radio]:checked') ? sEst : cont.querySelector('input[type=radio]')).focus(); return !f; },
+    sugerir(c) { if (tocado || !c) return; cont.querySelectorAll('input[type=radio]').forEach(r => { r.checked = r.value === c; }); pista.textContent = 'Sugerida según el ambiente.'; },
     leer() { const c = cont.querySelector('input[type=radio]:checked'); return { Condicion: c ? c.value : '', Estado: sEst.value, Situacion: sSit.value, Observaciones: obs.value.trim() }; } };
   return api;
 }
@@ -496,13 +665,15 @@ function crearCombo(etiqueta, valorInicial, lista) {
   api.setLista(lista); inp.value = valorInicial || '';
   return api;
 }
-function ambientesDe(ubic) { return (ubic && S.cat.porUbic.get(ubic)) || S.cat.ambientes; }
-function armarCombosTres(cont, inicial) {
+function ambientesDe(ubic) { if (ubic && S.cat.porUbic.has(ubic)) return S.cat.porUbic.get(ubic); return S.cat.estricto ? [] : S.cat.ambientes; }   // con UbicacionAmbiente: primero la ubicación, luego solo sus ambientes
+const sugerirCond = (u, a) => { const c = u && a && usoDe(u, a); if (c && ctx && ctx.estadoApi) ctx.estadoApi.sugerir(c); };
+function armarCombosTres(cont, inicial, alCambiar) {
   const n = crearCombo('Nombre', inicial.Nombre, S.cat.nombres);
   const u = crearCombo('Ubicación', inicial.Ubicacion, S.cat.ubicaciones);
   const a = crearCombo('Ambiente', inicial.Ambiente, ambientesDe(inicial.Ubicacion));
-  const alCambiarU = () => { const v = u.valor(); if (v) { const l = ambientesDe(v); a.setLista(l); if (!l.includes(a.valor())) a.input.value = ''; } };
+  const alCambiarU = () => { const v = u.valor(); if (v) { const l = ambientesDe(v); a.setLista(l); if (!l.includes(a.valor())) a.input.value = ''; } else if (S.cat.estricto) { a.setLista([]); a.input.value = ''; } };
   u.input.addEventListener('change', alCambiarU); u.input.addEventListener('blur', alCambiarU); u.input.addEventListener('input', alCambiarU);
+  if (alCambiar) [u, a].forEach(x => ['change', 'blur'].forEach(ev => x.input.addEventListener(ev, () => alCambiar(u.valor(), a.valor()))));
   cont.replaceChildren(n.wrap, u.wrap, a.wrap);
   return { n, u, a };
 }
@@ -521,7 +692,7 @@ function abrirCorreccion() {
   const b = ctx.bien;
   $('#corr-codigo').textContent = b.IDCodigoAntiguo;
   const f = $('#corr-form'); f.replaceChildren(); mensaje($('#corr-msg'), 'err', '');
-  combosCorr = armarCombosTres(f, { Nombre: b.Nombre, Ubicacion: b.Ubicacion, Ambiente: b.Ambiente });
+  combosCorr = armarCombosTres(f, { Nombre: b.Nombre, Ubicacion: b.Ubicacion, Ambiente: b.Ambiente }, sugerirCond);
   const rel = [['Nombre (actual)', b.Nombre], ['Ubicación (actual)', b.Ubicacion], ['Ambiente (actual)', b.Ambiente]];
   const ref = el('div', { class: 'card' }, ...rel.map(([k, v]) => campo(k, v, 'old')));
   f.prepend(ref);
@@ -537,14 +708,14 @@ async function guardarCorreccion() {
 
 /* ---------- alta de sobrante ---------- */
 let combosAlta = null;
-function abrirAlta(codigo, capturadoEn, origen) {
+function abrirAlta(codigo, capturadoEn, origen, lecturas) {
   ctx = { tipo: 'alta', codigo, capturadoEn, origen };
   $('#alta-codigo').textContent = codigo;
-  $('#alta-buscar').hidden = origen !== 'camara'; $('#alta-impreso').value = ''; mensaje($('#alta-bmsg'), 'err', '');
-  ctx.estadoApi = armarEstado($('#alta-estado'), { Situacion: 'Sobrantes' });
+  $('#alta-buscar').hidden = origen !== 'camara'; $('#alta-impreso').value = ''; mensaje($('#alta-bmsg'), 'info', lecturas && lecturas.some(Boolean) ? 'La cámara leyó: ' + lecturas.filter(Boolean).join(' · ').slice(0, 160) + ' (no coincide con la base).' : '');
+  ctx.estadoApi = armarEstado($('#alta-estado'), { Situacion: 'Sobrantes' }, '');
   const fm = formatoDe(codigo);
   $('#alta-aviso').replaceChildren(fm ? '' : el('div', { class: 'msg warn', text: 'El formato no coincide con ninguno conocido. Verifique que la lectura sea correcta.' }));
-  combosAlta = armarCombosTres($('#alta-form'), { Nombre: '', Ubicacion: '', Ambiente: '' });
+  combosAlta = armarCombosTres($('#alta-form'), { Nombre: '', Ubicacion: '', Ambiente: '' }, sugerirCond);
   mensaje($('#alta-msg'), 'err', '');
   overlay('alta');
 }
@@ -600,8 +771,8 @@ function construirLibro() {
   const bienes = [...S.bienes.values()];
   const encB = [...COLS, 'CodigoInterno', 'Resultado', 'Nombre1', 'Ubicacion1', 'Ambiente1', 'FechaCaptura', 'FechaGuardado', 'Usuario', 'AvisoReloj', 'CodigoBarras', 'Condicion', 'Estado', 'Situacion', 'Observaciones', ...NUEVAS.map(([c]) => c)];
   const aoaB = [encB, ...bienes.map(b => [b.IDCodigoAntiguo, b.Descripcion, b.Nombre, b.Ubicacion, b.Ambiente, Number(b.Baja), b.CodigoInterno, b.Resultado, b.Nombre1, b.Ubicacion1, b.Ambiente1, f(b.FechaCaptura), f(b.FechaGuardado), b.Usuario, b.AvisoReloj, b.CodigoBarras, b.Condicion, b.Estado, b.Situacion, b.Observaciones, ...NUEVAS.map(([c]) => b[c] || '')])];
-  const aoaL = [['Tipo', 'IDCodigoAntiguo', 'Resultado', 'Nombre1', 'Ubicacion1', 'Ambiente1', 'FechaCaptura', 'FechaGuardado', 'Usuario', 'Origen', 'AvisoReloj', 'CodigoBarras', 'Condicion', 'Estado', 'Situacion', 'Observaciones'],
-    ...S.historial.map(x => [x.t === 'alta' ? 'ALTA' : 'DECISION', x.codigo, x.t === 'alta' ? 'SOBRANTE' : x.Resultado, x.t === 'alta' ? x.Nombre : x.Nombre1, x.t === 'alta' ? x.Ubicacion : x.Ubicacion1, x.t === 'alta' ? x.Ambiente : x.Ambiente1, f(x.FechaCaptura), f(x.FechaGuardado), x.Usuario, x.Origen, x.AvisoReloj || '', x.CodigoBarras || '', x.Condicion || '', x.Estado || '', x.Situacion || '', x.Observaciones || ''])];
+  const aoaL = [['Tipo', 'IDCodigoAntiguo', 'Resultado', 'Nombre1', 'Ubicacion1', 'Ambiente1', 'FechaCaptura', 'FechaGuardado', 'Usuario', 'Origen', 'AvisoReloj', 'CodigoBarras', 'Condicion', 'Estado', 'Situacion', 'Observaciones', 'CodigoImpreso'],
+    ...S.historial.map(x => [x.t === 'alta' ? 'ALTA' : 'DECISION', x.codigo, x.t === 'alta' ? 'SOBRANTE' : x.Resultado, x.t === 'alta' ? x.Nombre : x.Nombre1, x.t === 'alta' ? x.Ubicacion : x.Ubicacion1, x.t === 'alta' ? x.Ambiente : x.Ambiente1, f(x.FechaCaptura), f(x.FechaGuardado), x.Usuario, x.Origen, x.AvisoReloj || '', x.CodigoBarras || '', x.Condicion || '', x.Estado || '', x.Situacion || '', x.Observaciones || '', x.CodigoImpreso || ''])];
   const aoaA = [['Codigo', 'Nombre', 'Ubicacion', 'Ambiente', 'FechaCaptura', 'FechaGuardado', 'Usuario', 'Origen', 'FormatoReconocido', 'AvisoReloj', 'CodigoBarras', 'CodigoImpreso', 'Condicion', 'Estado', 'Situacion', 'Observaciones'],
     ...S.altas.map(x => [x.codigo, x.Nombre, x.Ubicacion, x.Ambiente, f(x.FechaCaptura), f(x.FechaGuardado), x.Usuario, x.Origen, x.FormatoReconocido, x.AvisoReloj || '', x.CodigoBarras || '', x.CodigoImpreso || '', x.Condicion || '', x.Estado || '', x.Situacion || '', x.Observaciones || ''])];
   const aoaF = [[...COLS, ...NUEVAS.map(([c]) => c)], ...bienes.filter(b => !b.Resultado).map(b => [b.IDCodigoAntiguo, b.Descripcion, b.Nombre, b.Ubicacion, b.Ambiente, Number(b.Baja), ...NUEVAS.map(([c]) => b[c] || '')])];
@@ -609,7 +780,7 @@ function construirLibro() {
   const aoaI = [['Campo', 'Valor'], ['Exportado por', sesion.usuario], ['Exportado el', fmt(Date.now())], ['Maestro', S.info.archivo], ['Bienes', c.total], ['Correctos', c.ok], ['Incorrectos', c.mal], ['Faltantes (sin resultado)', c.pend], ['Altas', c.altas], ['Versión de la aplicación', APP_VER]];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws(aoaB, [16, 60, 30, 30, 30, 6, 14, 12, 28, 28, 28, 20, 20, 10, 14, 16, 10, 10, 22, 40, 16, 16, 16, 16, 16, 24, 50], [11, 12]), 'Bienes');
-  XLSX.utils.book_append_sheet(wb, ws(aoaL, [10, 16, 12, 28, 28, 28, 20, 20, 10, 10, 14, 16, 10, 10, 22, 40], [6, 7]), 'Lecturas');
+  XLSX.utils.book_append_sheet(wb, ws(aoaL, [10, 16, 12, 28, 28, 28, 20, 20, 10, 10, 14, 16, 10, 10, 22, 40, 18], [6, 7]), 'Lecturas');
   XLSX.utils.book_append_sheet(wb, ws(aoaA, [16, 28, 28, 28, 20, 20, 10, 10, 10, 14, 16, 16, 10, 10, 22, 40], [4, 5]), 'Altas');
   XLSX.utils.book_append_sheet(wb, ws(aoaF, [16, 60, 30, 30, 30, 6, 16, 16, 16, 16, 16, 24, 50], []), 'Faltantes');
   XLSX.utils.book_append_sheet(wb, ws(aoaI, [30, 40], []), 'Info');
@@ -696,6 +867,8 @@ function conectar() {
   $('#btn-menu-cerrar').addEventListener('click', () => overlay(null));
   $('#btn-cam').addEventListener('click', () => { if (stream || reader) { camQuiere = false; detenerCamara(); } else iniciarCamara(); });
   $('#btn-torch').addEventListener('click', linterna);
+  $('#btn-ocr').addEventListener('click', leerImpresoManual);
+  $('#btn-alta-ocr').addEventListener('click', leerImpresoDesdeAlta);
   const manual = () => { const v = $('#manual').value; if (v.trim()) { $('#manual').value = ''; alLeer(v, 'manual'); } };
   $('#btn-manual').addEventListener('click', manual);
   $('#manual').addEventListener('keydown', e => { if (e.key === 'Enter') manual(); });

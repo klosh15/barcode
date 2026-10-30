@@ -1,7 +1,8 @@
 /* Service worker: guarda la aplicación para que abra sin internet. No guarda datos del inventario. */
-const CACHE = 'inventario-v5B-1.6.0';
+const CACHE = 'inventario-v5B-2.0.0';
 const ARCHIVOS = ['./', 'index.html', 'app.css', 'app.js', 'manifest.webmanifest',
-  'lib/xlsx.full.min.js', 'lib/zxing.min.js', 'icons/icon-192.png', 'icons/icon-512.png'];
+  'lib/xlsx.full.min.js', 'lib/zxing.min.js',
+  'lib/tesseract/tesseract.min.js', 'lib/tesseract/worker.min.js', 'lib/tesseract/tesseract-core-simd-lstm.wasm.js', 'lib/tesseract/tesseract-core-lstm.wasm.js', 'lib/tesseract/eng.traineddata.gz', 'icons/icon-192.png', 'icons/icon-512.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(ARCHIVOS)).then(() => self.skipWaiting()));
