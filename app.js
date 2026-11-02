@@ -1,7 +1,7 @@
 'use strict';
 /* Inventario v5-B · un usuario y una clave por celular · base en IndexedDB */
 
-const APP_VER = '5B-2.0.0';
+const APP_VER = '5B-2.1.0';
 const USUARIOS = ['PAOLO', 'EYMHI', 'JHIMY', 'CARLOS', 'INVITADO'];
 const ITER = 600000;            // iteraciones PBKDF2-SHA256
 const MIN_CLAVE = 10;
@@ -145,8 +145,8 @@ function aplicar(reg) {
 /* ---------- páginas ---------- */
 const PAGINAS = ['setup', 'login', 'main'], OVERLAYS = ['ficha', 'corr', 'alta', 'menu'];
 function pagina(p) { PAGINAS.forEach(x => $('#p-' + x).hidden = x !== p); cerrarOverlays(); }
-function overlay(o) { OVERLAYS.forEach(x => $('#o-' + x).hidden = x !== o); if (o) { $('#o-' + o).scrollTop = 0; pausarLector(); } else reanudarLector(); }
-function cerrarOverlays() { OVERLAYS.forEach(x => $('#o-' + x).hidden = true); reanudarLector(); }
+function overlay(o) { OVERLAYS.forEach(x => $('#o-' + x).hidden = x !== o); if (o) { $('#o-' + o).scrollTop = 0; pausarLector(); } else { reanudarLector(); programarOCR(2500); } }
+function cerrarOverlays() { OVERLAYS.forEach(x => $('#o-' + x).hidden = true); reanudarLector(); programarOCR(2500); }
 const overlayAbierto = () => OVERLAYS.some(x => !$('#o-' + x).hidden) || !$('#modal').hidden || !$('#busy').hidden;
 
 /* ============================================================
@@ -533,15 +533,51 @@ async function leerImpresoDesdeAlta() {  // en «No está en la base»: vuelve a
   else mensaje(m, 'err', r.lecturas.some(Boolean) ? 'No coincide con la base. Texto leído: ' + r.lecturas.filter(Boolean).join(' · ').slice(0, 160) : 'No se leyó texto. Acerque la cámara al código impreso.');
 }
 
+/* ---------- lectura continua del código impreso (modo por defecto) ---------- */
+let modoImpreso = true, timerOCR = null, ocrOcupado = false, ultimoOCR = { id: '', t: 0 };
+try { modoImpreso = localStorage.getItem('inv5b_modo') !== 'barras'; } catch (e) { /* sin almacenamiento */ }
+function vivo(txt, cls) { const d = $('#ocr-vivo'); if (!d) return; d.textContent = txt || ''; d.className = 'ocr-vivo ' + (cls || ''); d.hidden = !txt; }
+function pintarModo() {
+  $('#btn-modo').textContent = modoImpreso ? 'Modo: leer código impreso' : 'Modo: leer código de barras';
+  if (!(stream || reader)) return;
+  $('#cam-hint').textContent = modoImpreso ? 'Apunte al código impreso (texto bajo las barras)' : 'Apunte al código de barras';
+  if (!modoImpreso) vivo('');
+}
+function cambiarModo() {
+  modoImpreso = !modoImpreso; try { localStorage.setItem('inv5b_modo', modoImpreso ? 'impreso' : 'barras'); } catch (e) { /* sin almacenamiento */ }
+  pintarModo(); programarOCR(0);
+}
+function programarOCR(ms) { clearTimeout(timerOCR); timerOCR = null; if (modoImpreso && (stream || reader)) timerOCR = setTimeout(cicloOCR, ms); }
+async function cicloOCR() {
+  timerOCR = null;
+  if (!modoImpreso || !(stream || reader) || !sesion) return;
+  const v = $('#video');
+  if (ocrOcupado || overlayAbierto() || v.readyState < 2 || !v.videoWidth || !$('#busy').hidden) return programarOCR(800);
+  ocrOcupado = true; vivo('Leyendo…', 'trabajando');
+  let r = null; try { r = await ocrBuscar(capturarFrame(null)); } catch (e) { console.warn('OCR:', e); }
+  ocrOcupado = false;
+  if (!sesion || !modoImpreso || !(stream || reader)) return vivo('');
+  if (r && r.bien) {
+    const id = r.bien.IDCodigoAntiguo, ahora = Date.now();
+    if (ultimoOCR.id === id && ahora - ultimoOCR.t < 6000) { ultimoOCR.t = ahora; vivo('Leído y encontrado: ' + id, 'ok'); return programarOCR(1200); }
+    ultimoOCR = { id, t: ahora }; reiniciarInactividad(); señal(r.bien.Baja === '1' ? 'baja' : 'ok');
+    vivo('Leído: ' + r.leido + ' → encontrado ' + id, 'ok');
+    return abrirFicha(r.bien, ahora, 'ocr', '', r);
+  }
+  const txt = r && r.lecturas.filter(Boolean).join(' · ').slice(0, 90);
+  vivo(txt ? 'Leído: ' + txt + ' → no coincide con la base' : 'Sin texto legible: acerque la cámara y enfoque', 'no');
+  programarOCR(700);
+}
+
 /* ---------- cámara ---------- */
 let stream = null, detector = null, timerDet = null, reader = null, torchOn = false, lectorPausado = false;
-const alResultadoZX = res => { if (res) alLeer(res.getText(), 'camara'); };
+const alResultadoZX = res => { if (res && !modoImpreso) alLeer(res.getText(), 'camara'); };
 function pausarLector() { if (reader && !lectorPausado) { lectorPausado = true; try { reader.stopContinuousDecode(); } catch (e) { /* sin lector */ } } }     // ZXing decodifica sin parar: se detiene mientras hay una ficha u OCR en pantalla
 function reanudarLector() { if (reader && lectorPausado) { lectorPausado = false; try { reader.decodeContinuously($('#video'), alResultadoZX); } catch (e) { /* se reabrirá al activar la cámara */ } } }
 const FMT_BD = ['code_128', 'code_39', 'code_93', 'codabar', 'itf', 'ean_13', 'ean_8', 'upc_a', 'qr_code', 'data_matrix'];
 function pistaVideo() { const v = $('#video').srcObject; return v && v.getVideoTracks && v.getVideoTracks()[0]; }
 function detenerCamara() {
-  clearInterval(timerDet); timerDet = null;
+  clearInterval(timerDet); timerDet = null; clearTimeout(timerOCR); timerOCR = null; vivo('');
   if (reader) { try { reader.reset(); } catch (e) { /* ya detenido */ } reader = null; } lectorPausado = false;
   if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
   const v = $('#video'); if (v.srcObject) { v.srcObject.getTracks && v.srcObject.getTracks().forEach(t => t.stop()); v.srcObject = null; }
@@ -565,7 +601,7 @@ async function iniciarCamara() {
       timerDet = setInterval(async () => {
         if (ocupado || video.readyState < 2 || overlayAbierto()) return;
         ocupado = true;
-        try { const r = await detector.detect(video); if (r.length) alLeer(r[0].rawValue, 'camara', { bbox: r[0].boundingBox }); } catch (e) { /* cuadro sin código */ }
+        try { const r = modoImpreso ? [] : await detector.detect(video); if (r.length) alLeer(r[0].rawValue, 'camara', { bbox: r[0].boundingBox }); } catch (e) { /* cuadro sin código */ }
         ocupado = false;
       }, 150);
     } else {
@@ -575,7 +611,7 @@ async function iniciarCamara() {
       reader = new Z.BrowserMultiFormatReader(hints, 200);
       await reader.decodeFromConstraints({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false }, video, alResultadoZX);
     }
-    hint.textContent = 'Apunte al código de barras'; $('#btn-cam').textContent = 'Detener cámara'; camQuiere = true;
+    $('#btn-cam').textContent = 'Detener cámara'; camQuiere = true; pintarModo(); programarOCR(1200);
   } catch (e) {
     console.error(e);
     hint.textContent = e && e.name === 'NotAllowedError' ? 'Permiso de cámara denegado. Actívelo en los ajustes del navegador o use la digitación manual.' : 'No se pudo abrir la cámara (' + (e && e.name || 'error') + '). Use la digitación manual.';
@@ -868,6 +904,7 @@ function conectar() {
   $('#btn-cam').addEventListener('click', () => { if (stream || reader) { camQuiere = false; detenerCamara(); } else iniciarCamara(); });
   $('#btn-torch').addEventListener('click', linterna);
   $('#btn-ocr').addEventListener('click', leerImpresoManual);
+  $('#btn-modo').addEventListener('click', cambiarModo); pintarModo();
   $('#btn-alta-ocr').addEventListener('click', leerImpresoDesdeAlta);
   const manual = () => { const v = $('#manual').value; if (v.trim()) { $('#manual').value = ''; alLeer(v, 'manual'); } };
   $('#btn-manual').addEventListener('click', manual);
