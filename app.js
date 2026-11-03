@@ -1,8 +1,8 @@
 'use strict';
 /* Inventario v5-B · un usuario y una clave por celular · base en IndexedDB */
 
-const APP_VER = '5B-2.2.0';
-const USUARIOS = ['PAOLO', 'EYMHI', 'JHIMY', 'CARLOS', 'INVITADO'];
+const APP_VER = '5B-2.2.1';
+const USUARIOS = ['PAOLO', 'EYMHI', 'JHIMY', 'CARLOS', 'NOHELI', 'AIXA', 'ELIZABETH', 'FERNANDO', 'JULIO', 'TEOFILA', 'WALTER', 'INVITADO'];
 const ITER = 600000;            // iteraciones PBKDF2-SHA256
 const MIN_CLAVE = 10;
 const DB_NAME = 'inventario_v5B';
