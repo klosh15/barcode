@@ -1,7 +1,7 @@
 'use strict';
 /* Inventario v5-B · un usuario y una clave por celular · base en IndexedDB */
 
-const APP_VER = '5B-2.1.0';
+const APP_VER = '5B-2.2.0';
 const USUARIOS = ['PAOLO', 'EYMHI', 'JHIMY', 'CARLOS', 'INVITADO'];
 const ITER = 600000;            // iteraciones PBKDF2-SHA256
 const MIN_CLAVE = 10;
@@ -22,6 +22,8 @@ const $ = (s, r = document) => r.querySelector(s);
 const te = new TextEncoder(), td = new TextDecoder();
 const p2 = n => String(n).padStart(2, '0');
 const limpiar = t => String(t == null ? '' : t).trim().toUpperCase().replace(/\s+/g, '');
+const condDeTexto = t => { const c = sinTilde(t || ''); return c === 'enuso' || c === 'uso' ? 'USO' : c === 'sinuso' || c === 'desuso' ? 'DESUSO' : ''; };     // «NO DETERM.» queda sin elegir
+const estadoDeTexto = t => ESTADOS.find(e => sinTilde(e) === sinTilde(t || '')) || '';                                                         // «NO DETERMINADO» queda sin elegir
 const normInterno = c => limpiar(c).replace(/^0+(?=\d)/, '');   // 000013401 == 13401
 const sinTilde = s => String(s).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '');
 const fmt = ms => { const d = new Date(ms); return `${p2(d.getDate())}/${p2(d.getMonth() + 1)}/${d.getFullYear()} ${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`; };
@@ -127,7 +129,7 @@ function nuevoEstado(maestro) {
   maestro.catalogo.pares.forEach(([u, a]) => par(u, a));
   const ord = s => [...s].filter(Boolean).sort((a, b) => a.localeCompare(b, 'es'));
   return {
-    bienes, porInterno, porBarra: new Map(), idxOCR: null, uso: new Map((maestro.catalogo.usos || []).map(([u, a, c]) => [sinTilde(u) + '|' + sinTilde(a), c])), info: maestro.info, historial: [], altas: [], ultimaCaptura: 0, relojDudoso: false,
+    bienes, porInterno, porBarra: new Map(), uso: new Map((maestro.catalogo.usos || []).map(([u, a, c]) => [sinTilde(u) + '|' + sinTilde(a), c])), info: maestro.info, historial: [], altas: [], ultimaCaptura: 0, relojDudoso: false,
     cat: { estricto: !!est.pares, nombres: ord(nombres), ubicaciones: ord(ubic), ambientes: ord(amb), porUbic: new Map([...porUbic].map(([u, s]) => [u, ord(s)])) },
   };
 }
@@ -145,8 +147,8 @@ function aplicar(reg) {
 /* ---------- páginas ---------- */
 const PAGINAS = ['setup', 'login', 'main'], OVERLAYS = ['ficha', 'corr', 'alta', 'menu'];
 function pagina(p) { PAGINAS.forEach(x => $('#p-' + x).hidden = x !== p); cerrarOverlays(); }
-function overlay(o) { OVERLAYS.forEach(x => $('#o-' + x).hidden = x !== o); if (o) { $('#o-' + o).scrollTop = 0; pausarLector(); } else { reanudarLector(); programarOCR(2500); } }
-function cerrarOverlays() { OVERLAYS.forEach(x => $('#o-' + x).hidden = true); reanudarLector(); programarOCR(2500); }
+function overlay(o) { OVERLAYS.forEach(x => $('#o-' + x).hidden = x !== o); if (o) { $('#o-' + o).scrollTop = 0; pausarLector(); } else reanudarLector(); }
+function cerrarOverlays() { OVERLAYS.forEach(x => $('#o-' + x).hidden = true); reanudarLector(); }
 const overlayAbierto = () => OVERLAYS.some(x => !$('#o-' + x).hidden) || !$('#modal').hidden || !$('#busy').hidden;
 
 /* ============================================================
@@ -164,7 +166,8 @@ function leerMaestro(buf, nombreArchivo) {
   const filas = XLSX.utils.sheet_to_json(wb.Sheets[nombreBienes], { defval: '', raw: false });
   if (!filas.length) throw new Error('La hoja «' + nombreBienes + '» está vacía.');
   const mapa = {}; Object.keys(filas[0]).forEach(h => { mapa[sinTilde(h)] = h; });
-  const colInt = ['codigointerno', 'idcodigointerno', 'codinterno'].map(k => mapa[k]).find(Boolean);
+  const colInt = ['idbienpatrimonial', 'idcodigobien', 'idbien', 'codigointerno', 'idcodigointerno', 'codinterno'].map(k => mapa[k]).find(Boolean);     // ID del bien: es lo que codifica el código de barras
+  const hayCond = !!mapa.condicion, hayEst = !!mapa.estado;
   const faltan = COLS.filter(c => !mapa[sinTilde(c)]);
   if (faltan.length) throw new Error('Faltan columnas: ' + faltan.join(', ') + '.');
   const bienes = [], vistos = new Set(), duplicados = [], formatos = {}, otros = [], internos = new Set(), internosRep = [];
@@ -179,7 +182,7 @@ function leerMaestro(buf, nombreArchivo) {
     const fm = formatoDe(codigo); if (fm) formatos[fm] = (formatos[fm] || 0) + 1; else otros.push(codigo);
     let interno = colInt ? String(f[colInt] == null ? '' : f[colInt]).trim() : '';
     if (interno) { const k = normInterno(interno); if (internos.has(k)) { internosRep.push(interno); interno = ''; } else internos.add(k); }
-    bienes.push({ IDCodigoAntiguo: codigo, CodigoInterno: interno, Descripcion: g('Descripcion'), ...Object.fromEntries(NUEVAS.map(([c]) => [c, g(c)])), Nombre: g('Nombre'), Ubicacion: g('Ubicacion'), Ambiente: g('Ambiente'), Baja: baja });
+    bienes.push({ IDCodigoAntiguo: codigo, CodigoInterno: interno, Descripcion: g('Descripcion'), ...Object.fromEntries(NUEVAS.map(([c]) => [c, g(c)])), Nombre: g('Nombre'), Ubicacion: g('Ubicacion'), Ambiente: g('Ambiente'), Baja: baja, ...(hayCond ? { CondicionBase: condDeTexto(g('Condicion')) } : {}), ...(hayEst && g('Estado') ? { EstadoBase: estadoDeTexto(g('Estado')) } : {}) });
   }
   const catalogo = { nombres: [], ubicaciones: [], ambientes: [], pares: [] };
   if (nombreCat) {
@@ -212,7 +215,7 @@ function leerMaestro(buf, nombreArchivo) {
 function pintarResumen(r) {
   const c = $('#setup-resumen'); c.replaceChildren();
   const filas = [['Filas leídas', r.total], ['Bienes cargados', r.bienes.length], ['Con Baja = 1', r.resumen.bajas],
-    ['Duplicados descartados', r.resumen.duplicados.length], ['Filas sin código', r.resumen.vacios], ['Con código interno', r.resumen.conInterno], ['Con Marca/Modelo/Serie…', r.bienes.filter(b => NUEVAS.some(([c]) => b[c])).length], ['Hoja Catálogo', r.resumen.catalogo ? 'sí' : 'no'],
+    ['Duplicados descartados', r.resumen.duplicados.length], ['Filas sin código', r.resumen.vacios], ['Con ID del bien (barras)', r.resumen.conInterno], ['Con Condición del Excel', r.bienes.filter(b => b.CondicionBase).length], ['Con Estado del Excel', r.bienes.filter(b => b.EstadoBase).length], ['Con Marca/Modelo/Serie…', r.bienes.filter(b => NUEVAS.some(([c]) => b[c])).length], ['Hoja Catálogo', r.resumen.catalogo ? 'sí' : 'no'],
     ['Hoja Personal', r.resumen.personal ? r.resumen.personal + ' nombres' : 'no'], ['Hoja UbicacionAmbiente', r.resumen.pares ? r.resumen.pares + ' pares · ' + r.resumen.conUso + ' con CONDICION' : 'no']];
   const t = el('table'); filas.forEach(([k, v]) => t.append(el('tr', {}, el('td', { text: k }), el('td', { text: String(v) }))));
   c.append(el('h2', { text: r.info.archivo }), t, el('h2', { text: 'Formatos de código' }));
@@ -221,8 +224,7 @@ function pintarResumen(r) {
   c.append(tf);
   if (r.resumen.duplicados.length) c.append(el('div', { class: 'msg warn', text: 'Códigos duplicados (se conservó el primero): ' + r.resumen.duplicados.slice(0, 8).join(', ') }));
   if (r.resumen.internosRep.length) c.append(el('div', { class: 'msg warn', text: 'Códigos internos repetidos (se conservó el primero): ' + r.resumen.internosRep.slice(0, 8).join(', ') }));
-  if (r.resumen.pares && !r.resumen.conUso) c.append(el('div', { class: 'msg warn', text: 'La hoja UbicacionAmbiente no trae la columna CONDICION (USO o DESUSO): no se sugerirá la Condición.' }));
-  if (r.resumen.usoRaro) c.append(el('div', { class: 'msg warn', text: r.resumen.usoRaro + ' filas de UbicacionAmbiente tienen una CONDICION distinta de USO o DESUSO; se ignoraron.' }));
+    if (r.resumen.usoRaro) c.append(el('div', { class: 'msg warn', text: r.resumen.usoRaro + ' filas de UbicacionAmbiente tienen una CONDICION distinta de USO o DESUSO; se ignoraron.' }));
   if (r.resumen.fueraPersonal) c.append(el('div', { class: 'msg warn', text: r.resumen.fueraPersonal + ' bienes tienen un Nombre que no está en la hoja Personal.' }));
   if (r.resumen.fueraUA) c.append(el('div', { class: 'msg warn', text: r.resumen.fueraUA + ' bienes tienen una Ubicación/Ambiente que no está en la hoja UbicacionAmbiente.' }));
   if (r.resumen.bajaRara) c.append(el('div', { class: 'msg warn', text: r.resumen.bajaRara + ' filas con Baja distinta de 0 o 1; se trataron como 0.' }));
@@ -383,7 +385,7 @@ function señal(tipo) {
 /* ---------- lectura ---------- */
 function buscarBien(c) { return S.bienes.get(c) || S.bienes.get(S.porInterno.get(normInterno(c))) || S.bienes.get(S.porBarra.get(normInterno(c))); }
 let ultimo = { codigo: '', t: 0 };
-function alLeer(texto, origen, extra) {
+function alLeer(texto, origen) {
   if (!sesion || overlayAbierto()) return;
   const capturadoEn = Date.now();
   const codigo = limpiar(texto); if (!codigo) return;
@@ -392,192 +394,18 @@ function alLeer(texto, origen, extra) {
   reiniciarInactividad();
   const bien = buscarBien(codigo);
   if (bien) { señal(bien.Baja === '1' ? 'baja' : 'ok'); abrirFicha(bien, capturadoEn, origen, origen === 'camara' ? codigo : ''); }
-  else if (origen === 'camara') leerImpresoYAbrir(codigo, capturadoEn, capturarFrame(extra && extra.bbox));
   else { señal('no'); abrirAlta(codigo, capturadoEn, origen); }
-}
-
-/* ---------- lectura del código impreso bajo las barras (OCR local, sin internet) ---------- */
-const OCR_DIR = 'lib/tesseract/';
-let ocrCargando = null;
-const cargarScript = src => new Promise((ok, ko) => { const t = el('script', { src }); t.onload = ok; t.onerror = () => ko(new Error('No se pudo cargar ' + src)); document.head.append(t); });
-function ocrTrabajador() {
-  if (!ocrCargando) ocrCargando = (async () => {
-    if (!window.Tesseract) await cargarScript(OCR_DIR + 'tesseract.min.js');
-    const abs = p => new URL(p, location.href).href;
-    const w = await Tesseract.createWorker('eng', 1, { workerPath: abs(OCR_DIR + 'worker.min.js'), corePath: abs(OCR_DIR), langPath: abs(OCR_DIR), gzip: true, cacheMethod: 'none' });
-    await w.setParameters({ tessedit_char_whitelist: '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ.-*', tessedit_pageseg_mode: '11' });
-    return w;
-  })().catch(e => { ocrCargando = null; throw e; });
-  return ocrCargando;
-}
-function capturarFrame(bbox) {          // lista de lienzos a probar: primero la franja bajo las barras y luego el cuadro completo
-  const v = $('#video'); if (!v.videoWidth || v.readyState < 2) return [];
-  const full = el('canvas'); full.width = v.videoWidth; full.height = v.videoHeight; full.getContext('2d').drawImage(v, 0, 0);
-  const lista = [];
-  if (bbox && bbox.width > 20 && bbox.height > 5) {
-    const x = Math.max(0, bbox.x - bbox.width * 0.15), y = Math.min(full.height - 2, bbox.y + bbox.height * 0.45);
-    const w = Math.min(full.width - x, bbox.width * 1.3), h = Math.min(full.height - y, bbox.height * 1.6 + 40);
-    const c = el('canvas'); c.width = Math.round(w); c.height = Math.round(h); c.getContext('2d').drawImage(full, x, y, w, h, 0, 0, c.width, c.height); lista.push(c);
-  }
-  lista.push(full); return lista;
-}
-function prepararOCR(origen) {          // gris + estiramiento de contraste (2 %–98 %); amplía las franjas pequeñas
-  const esc = Math.max(1, Math.min(3, 1000 / origen.width));
-  const c = el('canvas'); c.width = Math.round(origen.width * esc); c.height = Math.round(origen.height * esc);
-  const g = c.getContext('2d', { willReadFrequently: true }); g.imageSmoothingQuality = 'high'; g.drawImage(origen, 0, 0, c.width, c.height);
-  const im = g.getImageData(0, 0, c.width, c.height), d = im.data, h = new Uint32Array(256), n = d.length / 4;
-  for (let i = 0; i < d.length; i += 4) { const y = (d[i] * 299 + d[i + 1] * 587 + d[i + 2] * 114) / 1000 | 0; d[i] = y; h[y]++; }
-  let a = 0, lo = 0, hi = 255;
-  for (; lo < 255 && (a += h[lo]) < n * 0.02; lo++);
-  a = 0; for (; hi > 0 && (a += h[hi]) < n * 0.02; hi--);
-  const k = hi > lo ? 255 / (hi - lo) : 1;
-  for (let i = 0; i < d.length; i += 4) { const y = Math.max(0, Math.min(255, (d[i] - lo) * k)); d[i] = d[i + 1] = d[i + 2] = y; d[i + 3] = 255; }
-  g.putImageData(im, 0, 0); return c;
-}
-const CONFUSOS = { O: '0', Q: '0', I: '1', L: '1', S: '5', B: '8', Z: '2', G: '6' };       // letras que el OCR confunde con dígitos
-const claveOCR = t => limpiar(t).replace(/[^A-Z0-9]/g, '').replace(/[OQILSBZG]/g, c => CONFUSOS[c]);
-function indiceOCR() { if (!S.idxOCR) { const m = new Map(); S.bienes.forEach((b, id) => { const k = claveOCR(id); if (!m.has(k)) m.set(k, []); m.get(k).push(id); }); S.idxOCR = m; } return S.idxOCR; }
-function buscarEnTexto(texto) {         // devuelve { bien, leido, exacto } o null
-  const toks = [...new Set(String(texto).toUpperCase().split(/[\s,;:|]+/).map(t => t.replace(/^[^A-Z0-9*]+|[^A-Z0-9*]+$/g, '')).filter(t => t.length >= 3))];
-  for (const t of toks) { const b = buscarBien(t); if (b) return { bien: b, leido: t, exacto: true }; }
-  const idx = indiceOCR(), cand = [...toks, ...toks.slice(1).map((t, i) => toks[i] + t)];
-  const variantes = cand.flatMap(t => [t, t.slice(1), t.slice(0, -1)]);                   // el OCR a veces pega un carácter sobrante de las barras
-  for (const t of variantes) { const k = claveOCR(t); if (k.length < 5) continue; const ids = idx.get(k); if (ids && ids.length === 1) return { bien: S.bienes.get(ids[0]), leido: t, exacto: false }; }
-  return null;
-}
-function franjasTexto(cv) {            // franjas horizontales con tinta que no son barras: candidatas a línea de texto impreso
-  const esc = Math.min(1, 800 / cv.width), w = Math.max(1, Math.round(cv.width * esc)), h = Math.max(1, Math.round(cv.height * esc));
-  const c = el('canvas'); c.width = w; c.height = h;
-  const g = c.getContext('2d', { willReadFrequently: true }); g.drawImage(cv, 0, 0, w, h);
-  const d = g.getImageData(0, 0, w, h).data, gris = new Uint8Array(w * h);
-  for (let i = 0; i < w * h; i++) gris[i] = (d[i * 4] * 299 + d[i * 4 + 1] * 587 + d[i * 4 + 2] * 114) / 1000 | 0;
-  const W = w + 1, ii = new Float64Array(W * (h + 1));                  // imagen integral: media local rápida
-  for (let y = 0; y < h; y++) { let acc = 0; for (let x = 0; x < w; x++) { acc += gris[y * w + x]; ii[(y + 1) * W + x + 1] = ii[y * W + x + 1] + acc; } }
-  const r = 12, fila = new Float32Array(h), x0 = new Int32Array(h).fill(w), x1 = new Int32Array(h).fill(-1), tinta = new Uint8Array(w * h);
-  for (let y = 0; y < h; y++) {
-    const ya = Math.max(0, y - r), yb = Math.min(h, y + r + 1); let n = 0;
-    for (let x = 0; x < w; x++) {
-      const xa = Math.max(0, x - r), xb = Math.min(w, x + r + 1);
-      const media = (ii[yb * W + xb] - ii[ya * W + xb] - ii[yb * W + xa] + ii[ya * W + xa]) / ((xb - xa) * (yb - ya));
-      const xs = Math.max(0, x - 1), xe = Math.min(w, x + 2), ys = Math.max(0, y - 1), ye = Math.min(h, y + 2);       // media 3×3: el ruido de la cámara no cuenta como tinta
-      const suave = (ii[ye * W + xe] - ii[ys * W + xe] - ii[ye * W + xs] + ii[ys * W + xs]) / ((xe - xs) * (ye - ys));
-      if (suave < media - 25) { n++; tinta[y * w + x] = 1; if (x < x0[y]) x0[y] = x; x1[y] = x; }      // tinta = más oscuro que su entorno
-    }
-    fila[y] = n >= 3 ? n / (x1[y] - x0[y] + 1) : 0;                      // densidad de tinta respecto al ancho real de la fila
-  }
-  for (let y = 6; y < h; y++) {                                          // fila de barras: densa y casi idéntica a la de 6 filas más arriba (las barras son verticales; el texto no)
-    if (fila[y] < 0.25) continue;
-    let tot = 0, igual = 0;
-    for (let x = x0[y]; x <= x1[y]; x++) if (tinta[y * w + x]) { tot++; const o = (y - 6) * w + x; if (tinta[o] || (x > 0 && tinta[o - 1]) || (x < w - 1 && tinta[o + 1])) igual++; }
-    if (tot && igual / tot > 0.85) fila[y] = -1;
-  }
-  const bandas = []; let ini = -1, hueco = 0;
-  for (let y = 0; y <= h; y++) {
-    const hayTinta = y < h && fila[y] > 0.08;
-    if (hayTinta) { if (ini < 0) ini = y; hueco = 0; }
-    else if (ini >= 0 && (++hueco > 2 || y === h)) { bandas.push([ini, y - hueco]); ini = -1; hueco = 0; }
-  }
-  const salida = [];
-  for (const [a, b] of bandas) {
-    const alto = b - a + 1; if (alto < 8 || alto > h * 0.5) continue;
-    let media = 0, xa = w, xb = -1; for (let y = a; y <= b; y++) { media += Math.max(0, fila[y]); xa = Math.min(xa, x0[y]); xb = Math.max(xb, x1[y]); }
-    media /= alto; if (media > 0.3 && alto > 30) continue;                 // barras: muy densas y altas
-    if ((xb - xa) < w * 0.1) continue;
-    const m = Math.round(alto * 0.35), y = Math.max(0, a - m), yh = Math.min(h, b + m + 1), xi = Math.max(0, xa - m * 2), xf = Math.min(w, xb + m * 2 + 1);
-    const o = el('canvas'); o.width = Math.round((xf - xi) / esc); o.height = Math.round((yh - y) / esc);
-    o.getContext('2d').drawImage(cv, xi / esc, y / esc, o.width, o.height, 0, 0, o.width, o.height); salida.push(o);
-    if (salida.length >= 5) break;
-  }
-  return salida;
-}
-async function ocrBuscar(lienzos) {
-  const w = await ocrTrabajador(), lecturas = [];
-
-  const leer = async (cv, psm) => {
-    await w.setParameters({ tessedit_pageseg_mode: psm });
-    const { data } = await w.recognize(prepararOCR(cv));
-    lecturas.push(data.text.replace(/\s+/g, ' ').trim());
-    return buscarEnTexto(data.text);
-  };
-  for (const cv of lienzos) {                              // 1) cada franja de texto como línea suelta  2) el lienzo completo como texto disperso
-    for (const f of franjasTexto(cv)) { const r = await leer(f, '7'); if (r) return { ...r, lecturas }; }
-    const r = await leer(cv, '11'); if (r) return { ...r, lecturas };
-  }
-  return { bien: null, lecturas };
-}
-async function leerImpresoYAbrir(codigo, capturadoEn, lienzos) {
-  if (!lienzos.length) { señal('no'); return abrirAlta(codigo, capturadoEn, 'camara'); }
-  busy('Leyendo el código impreso…'); pausarLector();
-  let r; try { r = await ocrBuscar(lienzos); } catch (e) { console.warn('OCR:', e); r = { bien: null, lecturas: [] }; }
-  unbusy();
-  if (!sesion) return;
-  if (r.bien) { señal(r.bien.Baja === '1' ? 'baja' : 'ok'); abrirFicha(r.bien, capturadoEn, 'camara', codigo, r); }
-  else { señal('no'); abrirAlta(codigo, capturadoEn, 'camara', r.lecturas); }
-}
-async function leerImpresoManual() {     // botón «Leer texto impreso»: sin código de barras previo
-  if (!sesion || overlayAbierto()) return;
-  const lienzos = capturarFrame(null); if (!lienzos.length) return toast('Active la cámara y apunte al texto impreso');
-  const capturadoEn = Date.now(); busy('Leyendo el código impreso…'); pausarLector();
-  let r; try { r = await ocrBuscar(lienzos); } catch (e) { console.warn('OCR:', e); r = { bien: null, lecturas: [] }; }
-  unbusy(); if (!sesion) return;
-  if (r.bien) { señal(r.bien.Baja === '1' ? 'baja' : 'ok'); mensaje($('#main-aviso'), 'info', ''); abrirFicha(r.bien, capturadoEn, 'ocr', '', r); }
-  else { reanudarLector(); señal('no'); toast('No se reconoció un código de la base'); mensaje($('#main-aviso'), 'info', r.lecturas.some(Boolean) ? 'Texto leído: ' + r.lecturas.filter(Boolean).join(' · ').slice(0, 160) : 'No se leyó texto. Acerque la cámara al código impreso y enfoque.'); }
-}
-async function leerImpresoDesdeAlta() {  // en «No está en la base»: vuelve a leer el texto impreso con el cuadro actual de la cámara
-  const m = $('#alta-bmsg'), lienzos = capturarFrame(null);
-  if (!lienzos.length) return mensaje(m, 'err', 'La cámara no está activa.');
-  busy('Leyendo el código impreso…');
-  let r; try { r = await ocrBuscar(lienzos); } catch (e) { console.warn('OCR:', e); r = { bien: null, lecturas: [] }; }
-  unbusy();
-  if (r.bien) { $('#alta-impreso').value = r.bien.IDCodigoAntiguo; buscarImpreso(); }
-  else mensaje(m, 'err', r.lecturas.some(Boolean) ? 'No coincide con la base. Texto leído: ' + r.lecturas.filter(Boolean).join(' · ').slice(0, 160) : 'No se leyó texto. Acerque la cámara al código impreso.');
-}
-
-/* ---------- lectura continua del código impreso (modo por defecto) ---------- */
-let modoImpreso = true, timerOCR = null, ocrOcupado = false, ultimoOCR = { id: '', t: 0 };
-try { modoImpreso = localStorage.getItem('inv5b_modo') !== 'barras'; } catch (e) { /* sin almacenamiento */ }
-function vivo(txt, cls) { const d = $('#ocr-vivo'); if (!d) return; d.textContent = txt || ''; d.className = 'ocr-vivo ' + (cls || ''); d.hidden = !txt; }
-function pintarModo() {
-  $('#btn-modo').textContent = modoImpreso ? 'Modo: leer código impreso' : 'Modo: leer código de barras';
-  if (!(stream || reader)) return;
-  $('#cam-hint').textContent = modoImpreso ? 'Apunte al código impreso (texto bajo las barras)' : 'Apunte al código de barras';
-  if (!modoImpreso) vivo('');
-}
-function cambiarModo() {
-  modoImpreso = !modoImpreso; try { localStorage.setItem('inv5b_modo', modoImpreso ? 'impreso' : 'barras'); } catch (e) { /* sin almacenamiento */ }
-  pintarModo(); programarOCR(0);
-}
-function programarOCR(ms) { clearTimeout(timerOCR); timerOCR = null; if (modoImpreso && (stream || reader)) timerOCR = setTimeout(cicloOCR, ms); }
-async function cicloOCR() {
-  timerOCR = null;
-  if (!modoImpreso || !(stream || reader) || !sesion) return;
-  const v = $('#video');
-  if (ocrOcupado || overlayAbierto() || v.readyState < 2 || !v.videoWidth || !$('#busy').hidden) return programarOCR(800);
-  ocrOcupado = true; vivo('Leyendo…', 'trabajando');
-  let r = null; try { r = await ocrBuscar(capturarFrame(null)); } catch (e) { console.warn('OCR:', e); }
-  ocrOcupado = false;
-  if (!sesion || !modoImpreso || !(stream || reader)) return vivo('');
-  if (r && r.bien) {
-    const id = r.bien.IDCodigoAntiguo, ahora = Date.now();
-    if (ultimoOCR.id === id && ahora - ultimoOCR.t < 6000) { ultimoOCR.t = ahora; vivo('Leído y encontrado: ' + id, 'ok'); return programarOCR(1200); }
-    ultimoOCR = { id, t: ahora }; reiniciarInactividad(); señal(r.bien.Baja === '1' ? 'baja' : 'ok');
-    vivo('Leído: ' + r.leido + ' → encontrado ' + id, 'ok');
-    return abrirFicha(r.bien, ahora, 'ocr', '', r);
-  }
-  const txt = r && r.lecturas.filter(Boolean).join(' · ').slice(0, 90);
-  vivo(txt ? 'Leído: ' + txt + ' → no coincide con la base' : 'Sin texto legible: acerque la cámara y enfoque', 'no');
-  programarOCR(700);
 }
 
 /* ---------- cámara ---------- */
 let stream = null, detector = null, timerDet = null, reader = null, torchOn = false, lectorPausado = false;
-const alResultadoZX = res => { if (res && !modoImpreso) alLeer(res.getText(), 'camara'); };
-function pausarLector() { if (reader && !lectorPausado) { lectorPausado = true; try { reader.stopContinuousDecode(); } catch (e) { /* sin lector */ } } }     // ZXing decodifica sin parar: se detiene mientras hay una ficha u OCR en pantalla
+const alResultadoZX = res => { if (res) alLeer(res.getText(), 'camara'); };
+function pausarLector() { if (reader && !lectorPausado) { lectorPausado = true; try { reader.stopContinuousDecode(); } catch (e) { /* sin lector */ } } }     // ZXing decodifica sin parar: se detiene mientras hay una ficha en pantalla
 function reanudarLector() { if (reader && lectorPausado) { lectorPausado = false; try { reader.decodeContinuously($('#video'), alResultadoZX); } catch (e) { /* se reabrirá al activar la cámara */ } } }
 const FMT_BD = ['code_128', 'code_39', 'code_93', 'codabar', 'itf', 'ean_13', 'ean_8', 'upc_a', 'qr_code', 'data_matrix'];
 function pistaVideo() { const v = $('#video').srcObject; return v && v.getVideoTracks && v.getVideoTracks()[0]; }
 function detenerCamara() {
-  clearInterval(timerDet); timerDet = null; clearTimeout(timerOCR); timerOCR = null; vivo('');
+  clearInterval(timerDet); timerDet = null;
   if (reader) { try { reader.reset(); } catch (e) { /* ya detenido */ } reader = null; } lectorPausado = false;
   if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
   const v = $('#video'); if (v.srcObject) { v.srcObject.getTracks && v.srcObject.getTracks().forEach(t => t.stop()); v.srcObject = null; }
@@ -601,7 +429,7 @@ async function iniciarCamara() {
       timerDet = setInterval(async () => {
         if (ocupado || video.readyState < 2 || overlayAbierto()) return;
         ocupado = true;
-        try { const r = modoImpreso ? [] : await detector.detect(video); if (r.length) alLeer(r[0].rawValue, 'camara', { bbox: r[0].boundingBox }); } catch (e) { /* cuadro sin código */ }
+        try { const r = await detector.detect(video); if (r.length) alLeer(r[0].rawValue, 'camara'); } catch (e) { /* cuadro sin código */ }
         ocupado = false;
       }, 150);
     } else {
@@ -611,7 +439,7 @@ async function iniciarCamara() {
       reader = new Z.BrowserMultiFormatReader(hints, 200);
       await reader.decodeFromConstraints({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false }, video, alResultadoZX);
     }
-    $('#btn-cam').textContent = 'Detener cámara'; camQuiere = true; pintarModo(); programarOCR(1200);
+    hint.textContent = 'Apunte al código de barras'; $('#btn-cam').textContent = 'Detener cámara'; camQuiere = true;
   } catch (e) {
     console.error(e);
     hint.textContent = e && e.name === 'NotAllowedError' ? 'Permiso de cámara denegado. Actívelo en los ajustes del navegador o use la digitación manual.' : 'No se pudo abrir la cámara (' + (e && e.name || 'error') + '). Use la digitación manual.';
@@ -630,24 +458,23 @@ async function linterna() {
    FICHA
    ============================================================ */
 function campo(k, v, cls) { return el('div', { class: 'field ' + (cls || '') }, el('div', { class: 'k', text: k }), el('div', { class: 'v', text: v || '—' })); }
-function abrirFicha(bien, capturadoEn, origen, barra, impreso) {
-  ctx = { tipo: 'bien', bien, capturadoEn, origen, barra: barra || '', impreso: impreso && impreso.leido ? impreso : null };
-  $('#ficha-codigo').textContent = bien.IDCodigoAntiguo;
+function abrirFicha(bien, capturadoEn, origen, barra) {
+  ctx = { tipo: 'bien', bien, capturadoEn, origen, barra: barra || '' };
+  $('#ficha-codigo').textContent = bien.CodigoInterno || bien.IDCodigoAntiguo;
   $('#ficha-baja').hidden = bien.Baja !== '1';
-  const campos = $('#ficha-campos'); campos.replaceChildren(...(bien.CodigoInterno ? [campo('Código interno', bien.CodigoInterno)] : []), campo('Descripción', bien.Descripcion), ...NUEVAS.filter(([c]) => bien[c]).map(([c, t]) => campo(t, bien[c])), campo('Nombre', bien.Nombre), campo('Ubicación', bien.Ubicacion), campo('Ambiente', bien.Ambiente));
+  const campos = $('#ficha-campos'); campos.replaceChildren(...(bien.CodigoInterno ? [campo('ID del bien (código de barras)', bien.CodigoInterno)] : []), campo('Código antiguo (IDCodigoAntiguo)', bien.IDCodigoAntiguo), campo('Descripción', bien.Descripcion), ...NUEVAS.filter(([c]) => bien[c]).map(([c, t]) => campo(t, bien[c])), campo('Nombre', bien.Nombre), campo('Ubicación', bien.Ubicacion), campo('Ambiente', bien.Ambiente));
   $('#ficha-cap').textContent = fmt(capturadoEn);
   const br = $('#ficha-barra'); br.replaceChildren();
   if (ctx.barra && ctx.barra !== bien.IDCodigoAntiguo) br.append(campo('Código de barras leído', ctx.barra + ' (se asociará a este bien al guardar)'));
   if (bien.CodigoBarras && ctx.barra && normInterno(bien.CodigoBarras) !== normInterno(ctx.barra)) br.append(el('div', { class: 'msg warn', text: 'Este bien ya tenía asociado otro código de barras: ' + bien.CodigoBarras }));
-  if (ctx.impreso) br.append(campo('Código impreso leído por la cámara', ctx.impreso.leido + (ctx.impreso.exacto ? '' : ' (corregido a ' + bien.IDCodigoAntiguo + ')')));
-  ctx.estadoApi = armarEstado($('#ficha-estado'), bien, usoDe(bien.Ubicacion, bien.Ambiente)); mensaje($('#ficha-msg'), 'err', '');
+  ctx.estadoApi = armarEstado($('#ficha-estado'), { ...bien, Condicion: bien.Condicion || bien.CondicionBase || '', Estado: bien.Estado || bien.EstadoBase }, usoDe(bien.Ubicacion, bien.Ambiente)); mensaje($('#ficha-msg'), 'err', '');
   const prev = $('#ficha-previo');
   prev.textContent = bien.Resultado ? `Ya verificado: ${bien.Resultado} por ${bien.Usuario} el ${fmt(bien.FechaGuardado)}. Si decide de nuevo, se reemplaza el resultado (el historial se conserva).` : '';
   overlay('ficha');
 }
 async function guardarDecision(datos) {
   const { bien, capturadoEn, origen } = ctx;
-  const reg = { t: 'dec', codigo: bien.IDCodigoAntiguo, Resultado: datos.Resultado, Nombre1: datos.Nombre1 || '', Ubicacion1: datos.Ubicacion1 || '', Ambiente1: datos.Ambiente1 || '', CodigoBarras: ctx.barra || '', CodigoImpreso: ctx.impreso ? ctx.impreso.leido : '', ...ctx.estadoApi.leer(),
+  const reg = { t: 'dec', codigo: bien.IDCodigoAntiguo, Resultado: datos.Resultado, Nombre1: datos.Nombre1 || '', Ubicacion1: datos.Ubicacion1 || '', Ambiente1: datos.Ambiente1 || '', CodigoBarras: ctx.barra || '', ...ctx.estadoApi.leer(),
     FechaCaptura: capturadoEn, FechaGuardado: Date.now(), Usuario: sesion.usuario, Origen: origen };
   const av = avisoReloj(capturadoEn); if (av) reg.AvisoReloj = av;
   try { await idbAdd('diario', await encJSON(sesion.key, reg)); }
@@ -670,17 +497,21 @@ function armarEstado(cont, ini, sugerida) {
   const pista = el('div', { class: 'muted', text: !ini.Condicion && sugerida ? 'Sugerida según el ambiente.' : '' });
   const rd = v => el('label', { class: 'rd' }, el('input', { type: 'radio', name: nom, value: v, onchange: () => { tocado = true; pista.textContent = ''; }, ...(inicial === v ? { checked: '' } : {}) }), v);
   const sel = (idc, lista, val) => el('select', { id: idc }, el('option', { value: '', text: 'Seleccione…' }), ...lista.map(x => el('option', { value: x, text: x, ...(x === val ? { selected: '' } : {}) })));
-  const sEst = sel(id + 'e', ESTADOS, ini.Estado || 'Bueno'), sSit = sel(id + 's', SITUACIONES, ini.Situacion);
-  const obs = el('textarea', { id: id + 'o', maxlength: '500', rows: '3', placeholder: 'Opcional' }); obs.value = ini.Observaciones || '';
+  const sEst = sel(id + 'e', ESTADOS, ini.Estado === undefined ? 'Bueno' : ini.Estado), sSit = sel(id + 's', SITUACIONES, ini.Situacion);
+  const chk = el('input', { type: 'checkbox', id: id + 'c' });
+  const obs = el('textarea', { id: id + 'o', maxlength: '500', rows: '3', placeholder: 'Opcional' }); obs.value = ini.Observaciones || ''; chk.checked = !!(ini.Situacion || ini.Observaciones);
   cont.replaceChildren(
     el('label', { style: 'margin-top:0', text: 'Condición *' }), el('div', { class: 'row', role: 'radiogroup', 'aria-label': 'Condición' }, rd('USO'), rd('DESUSO')), pista,
     el('label', { for: id + 'e', text: 'Estado *' }), sEst,
+    el('label', { class: 'rd', style: 'margin-top:12px' }, chk, 'Registrar Situación y Observaciones'),
     el('label', { for: id + 's', text: 'Situación' }), sSit,
     el('label', { for: id + 'o', text: 'Observaciones' }), obs);
+  const alChk = () => { sSit.disabled = obs.disabled = !chk.checked; };
+  chk.addEventListener('change', () => { alChk(); if (chk.checked) sSit.focus(); }); alChk();
   const falta = () => { const v = api.leer(); return !v.Condicion ? 'Elija la Condición: USO o DESUSO.' : !v.Estado ? 'Elija el Estado del bien.' : ''; };
   const api = { validar(msgCont) { const f = falta(); mensaje(msgCont, 'err', f); if (f) (!sEst.value && cont.querySelector('input[type=radio]:checked') ? sEst : cont.querySelector('input[type=radio]')).focus(); return !f; },
     sugerir(c) { if (tocado || !c) return; cont.querySelectorAll('input[type=radio]').forEach(r => { r.checked = r.value === c; }); pista.textContent = 'Sugerida según el ambiente.'; },
-    leer() { const c = cont.querySelector('input[type=radio]:checked'); return { Condicion: c ? c.value : '', Estado: sEst.value, Situacion: sSit.value, Observaciones: obs.value.trim() }; } };
+    leer() { const c = cont.querySelector('input[type=radio]:checked'); return { Condicion: c ? c.value : '', Estado: sEst.value, Situacion: chk.checked ? sSit.value : '', Observaciones: chk.checked ? obs.value.trim() : '' }; } };
   return api;
 }
 
@@ -744,10 +575,10 @@ async function guardarCorreccion() {
 
 /* ---------- alta de sobrante ---------- */
 let combosAlta = null;
-function abrirAlta(codigo, capturadoEn, origen, lecturas) {
+function abrirAlta(codigo, capturadoEn, origen) {
   ctx = { tipo: 'alta', codigo, capturadoEn, origen };
   $('#alta-codigo').textContent = codigo;
-  $('#alta-buscar').hidden = origen !== 'camara'; $('#alta-impreso').value = ''; mensaje($('#alta-bmsg'), 'info', lecturas && lecturas.some(Boolean) ? 'La cámara leyó: ' + lecturas.filter(Boolean).join(' · ').slice(0, 160) + ' (no coincide con la base).' : '');
+  $('#alta-buscar').hidden = origen !== 'camara'; $('#alta-impreso').value = ''; mensaje($('#alta-bmsg'), 'info', '');
   ctx.estadoApi = armarEstado($('#alta-estado'), { Situacion: 'Sobrantes' }, '');
   const fm = formatoDe(codigo);
   $('#alta-aviso').replaceChildren(fm ? '' : el('div', { class: 'msg warn', text: 'El formato no coincide con ninguno conocido. Verifique que la lectura sea correcta.' }));
@@ -903,9 +734,6 @@ function conectar() {
   $('#btn-menu-cerrar').addEventListener('click', () => overlay(null));
   $('#btn-cam').addEventListener('click', () => { if (stream || reader) { camQuiere = false; detenerCamara(); } else iniciarCamara(); });
   $('#btn-torch').addEventListener('click', linterna);
-  $('#btn-ocr').addEventListener('click', leerImpresoManual);
-  $('#btn-modo').addEventListener('click', cambiarModo); pintarModo();
-  $('#btn-alta-ocr').addEventListener('click', leerImpresoDesdeAlta);
   const manual = () => { const v = $('#manual').value; if (v.trim()) { $('#manual').value = ''; alLeer(v, 'manual'); } };
   $('#btn-manual').addEventListener('click', manual);
   $('#manual').addEventListener('keydown', e => { if (e.key === 'Enter') manual(); });
