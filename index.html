@@ -148,8 +148,14 @@
 <div id="o-rep" class="overlay" hidden>
   <div class="topbar"><div class="who">Reporte por persona</div><button id="btn-rep-cerrar" class="btn sec small" style="width:auto">Volver</button></div>
   <div class="page">
-    <label for="rep-sel" style="margin-top:0">Persona (columna Nombre)</label>
+    <label for="rep-sel" style="margin-top:0">1. Persona (columna Nombre)</label>
     <select id="rep-sel"></select>
+    <label for="rep-ubi">2. Ubicación</label>
+    <select id="rep-ubi"></select>
+    <label for="rep-amb">3. Ambiente</label>
+    <select id="rep-amb"></select>
+    <label for="rep-est">Mostrar en la lista</label>
+    <select id="rep-est"><option value="">Todos los bienes</option><option value="falta">Solo los que faltan pasar inventario</option><option value="ins">Solo los inventariados</option></select>
     <div id="rep-cuerpo" style="margin-top:10px"></div>
     <div class="row" style="margin-top:12px">
       <button id="btn-rep-mail" class="btn">Enviar por email</button>

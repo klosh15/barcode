@@ -1,7 +1,7 @@
 'use strict';
 /* Inventario v5-B · un usuario y una clave por celular · base en IndexedDB */
 
-const APP_VER = '5B-2.3.0';
+const APP_VER = '5B-2.4.0';
 const USUARIOS = ['PAOLO', 'EYMHI', 'JHIMY', 'CARLOS', 'NOHELI', 'AIXA', 'ELIZABETH', 'FERNANDO', 'JULIO', 'TEOFILA', 'WALTER', 'INVITADO'];
 const ITER = 600000;            // iteraciones PBKDF2-SHA256
 const MIN_CLAVE = 10;
@@ -676,68 +676,73 @@ async function exportar(compartir) {
   } catch (e) { unbusy(); console.error(e); toast('Error al exportar: ' + (e.message || e)); }
 }
 
-/* ---------- reporte por persona (columna Nombre) ---------- */
+/* ---------- reporte por persona (columna Nombre) → Ubicación → Ambiente → faltan / inventariados ---------- */
 const hecho = b => b.Resultado === 'CORRECTO' || b.Resultado === 'INCORRECTO';
-function reportePersonas() {          // [{ nombre, bienes, ins, falta, bajas, altas }] ordenado por nombre
-  const m = new Map();
-  S.bienes.forEach(b => { const n = b.Nombre || '(sin nombre)'; if (!m.has(n)) m.set(n, []); m.get(n).push(b); });
-  return [...m].map(([nombre, bienes]) => ({ nombre, bienes, ins: bienes.filter(hecho), falta: bienes.filter(b => !hecho(b)), bajas: bienes.filter(b => b.Baja === '1').length, altas: S.altas.filter(a => (a.Nombre || '(sin nombre)') === nombre) }))
-    .sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'));
-}
+const sinNombre = '(sin nombre)';
 const pct = (a, b) => b ? Math.round(a * 1000 / b) / 10 : 0;
-let repSel = '';
-function abrirReporte() {
-  const sel = $('#rep-sel'), ps = reportePersonas();
-  sel.replaceChildren(el('option', { value: '', text: 'Todas las personas (resumen)' }), ...ps.map(p => el('option', { value: p.nombre, text: `${p.nombre} — ${p.ins.length}/${p.bienes.length}` })));
-  sel.value = ps.some(p => p.nombre === repSel) ? repSel : ''; pintarReporte(); overlay('rep');
+const REP_MAX = 300;                                                         // renglones que se dibujan a la vez (el Excel trae todos)
+let rep = { per: '', ubi: '', amb: '', est: '' };
+function conteo(lista, f) { const m = new Map(); lista.forEach(b => { const k = f(b) || '(vacío)'; m.set(k, (m.get(k) || 0) + 1); }); return [...m].sort((a, b) => a[0].localeCompare(b[0], 'es')); }
+function repBienes(hasta) {                    // bienes que cumplen los filtros hasta el nivel indicado: 'per' | 'ubi' | 'amb'
+  let l = [...S.bienes.values()];
+  if (rep.per) l = l.filter(b => (b.Nombre || sinNombre) === rep.per);
+  if (hasta !== 'per' && rep.ubi) l = l.filter(b => (b.Ubicacion || '(vacío)') === rep.ubi);
+  if (hasta === 'amb' && rep.amb) l = l.filter(b => (b.Ambiente || '(vacío)') === rep.amb);
+  return l;
 }
-function filaBien(b) { return el('tr', {}, el('td', { text: b.CodigoInterno || '' }), el('td', { text: b.IDCodigoAntiguo }), el('td', { text: (b.Descripcion || '').slice(0, 80) })); }
-function tablaBienes(lista) {
-  const t = el('table', { class: 'rep-tabla' }, el('tr', {}, el('th', { text: 'ID bien' }), el('th', { text: 'Cód. antiguo' }), el('th', { text: 'Descripción' })));
-  lista.forEach(b => t.append(filaBien(b))); return el('div', { style: 'overflow-x:auto' }, t);
+function llenarSel(id, etiquetaTodos, pares, actual) {
+  const sel = $(id); sel.replaceChildren(el('option', { value: '', text: etiquetaTodos }), ...pares.map(([k, n, ins]) => el('option', { value: k, text: `${k} — ${ins}/${n}` })));
+  sel.value = pares.some(p => p[0] === actual) ? actual : ''; return sel.value;
 }
-function pintarReporte() {
-  repSel = $('#rep-sel').value; const c = $('#rep-cuerpo'), ps = reportePersonas(); c.replaceChildren();
-  if (!repSel) {
-    const tot = ps.reduce((a, p) => a + p.bienes.length, 0), ins = ps.reduce((a, p) => a + p.ins.length, 0);
-    c.append(el('div', { class: 'card' }, campo('Bienes totales', String(tot)), campo('Inventariados', `${ins} (${pct(ins, tot)} %)`), campo('Faltan', String(tot - ins)), campo('Personas', String(ps.length))));
-    const t = el('table', { class: 'rep-tabla' }, el('tr', {}, ...['Persona', 'Total', 'Inv.', 'Faltan', '%'].map(x => el('th', { text: x }))));
-    ps.forEach(p => t.append(el('tr', {}, el('td', { text: p.nombre }), el('td', { text: String(p.bienes.length) }), el('td', { text: String(p.ins.length) }), el('td', { text: String(p.falta.length) }), el('td', { text: String(pct(p.ins.length, p.bienes.length)) }))));
-    c.append(el('div', { style: 'overflow-x:auto' }, t)); return;
-  }
-  const p = ps.find(x => x.nombre === repSel); if (!p) return;
-  c.append(el('div', { class: 'card' }, campo('Persona', p.nombre), campo('Bienes totales', String(p.bienes.length) + (p.bajas ? ` (${p.bajas} con BAJA)` : '')), campo('Inventariados', `${p.ins.length} (${pct(p.ins.length, p.bienes.length)} %)`), campo('Faltan', String(p.falta.length)), ...(p.altas.length ? [campo('Sobrantes registrados a su nombre', String(p.altas.length))] : [])));
-  const det = (titulo, lista, abierto) => el('details', abierto ? { open: '' } : {}, el('summary', { text: `${titulo} (${lista.length})` }), lista.length ? tablaBienes(lista) : el('p', { class: 'muted', text: 'Ninguno.' }));
-  c.append(det('Faltan por inventariar', p.falta, true), det('Ya inventariados', p.ins, false));
+const conteoIns = (lista, f) => conteo(lista, f).map(([k, n]) => [k, n, lista.filter(b => (f(b) || '(vacío)') === k && hecho(b)).length]);
+function abrirReporte() { pintarReporte(true); overlay('rep'); }
+function pintarReporte(desdeCero) {
+  if (desdeCero) rep = { per: '', ubi: '', amb: '', est: '' };
+  else { rep.per = $('#rep-sel').value; rep.ubi = $('#rep-ubi').value; rep.amb = $('#rep-amb').value; rep.est = $('#rep-est').value; }
+  const todos = [...S.bienes.values()], nom = b => b.Nombre || sinNombre;
+  rep.per = llenarSel('#rep-sel', 'Todas las personas', conteoIns(todos, nom), rep.per);
+  const dePer = repBienes('per');
+  rep.ubi = llenarSel('#rep-ubi', 'Todas las ubicaciones', conteoIns(dePer, b => b.Ubicacion), rep.ubi);
+  const deUbi = repBienes('ubi');
+  rep.amb = llenarSel('#rep-amb', 'Todos los ambientes', conteoIns(deUbi, b => b.Ambiente), rep.amb);
+  $('#rep-est').value = rep.est;
+  const l = repBienes('amb'), ins = l.filter(hecho), falta = l.filter(b => !hecho(b)), bajas = l.filter(b => b.Baja === '1').length;
+  const c = $('#rep-cuerpo'); c.replaceChildren();
+  c.append(el('div', { class: 'card' }, campo('Bienes totales', String(l.length) + (bajas ? ` (${bajas} con BAJA)` : '')), campo('Inventariados', `${ins.length} (${pct(ins.length, l.length)} %)`), campo('Faltan pasar inventario', String(falta.length)),
+    ...(rep.per ? [campo('Sobrantes registrados a su nombre', String(S.altas.filter(a => (a.Nombre || sinNombre) === rep.per).length))] : [])));
+  const lista = rep.est === 'falta' ? falta : rep.est === 'ins' ? ins : l;
+  const t = el('table', { class: 'rep-tabla' }, el('tr', {}, ...['', 'ID bien', 'Cód. antiguo', 'Descripción', ...(rep.per ? [] : ['Persona']), ...(rep.ubi ? [] : ['Ubicación']), ...(rep.amb ? [] : ['Ambiente'])].map(x => el('th', { text: x }))));
+  lista.slice(0, REP_MAX).forEach(b => t.append(el('tr', { class: hecho(b) ? 'hecho' : 'falta' }, el('td', { text: hecho(b) ? '✔' : '○', title: hecho(b) ? 'Inventariado' : 'Falta' }), el('td', { text: b.CodigoInterno || '' }), el('td', { text: b.IDCodigoAntiguo }), el('td', { text: (b.Descripcion || '').slice(0, 80) }),
+    ...(rep.per ? [] : [el('td', { text: nom(b) })]), ...(rep.ubi ? [] : [el('td', { text: b.Ubicacion || '' })]), ...(rep.amb ? [] : [el('td', { text: b.Ambiente || '' })]))));
+  c.append(el('div', { class: 'muted', text: `Lista: ${lista.length} bienes` + (rep.est === 'falta' ? ' (solo los que faltan)' : rep.est === 'ins' ? ' (solo los inventariados)' : ' (✔ inventariado · ○ falta)') + (lista.length > REP_MAX ? `. Se muestran los primeros ${REP_MAX}: filtre más o genere el Excel para ver todos.` : '') }),
+    lista.length ? el('div', { style: 'overflow-x:auto' }, t) : el('p', { class: 'muted', text: 'No hay bienes con ese filtro.' }));
 }
+function etiquetaFiltro() { return [rep.per || 'todas las personas', rep.ubi, rep.amb].filter(Boolean).join(' › '); }
 function textoReporte(max) {
-  const ps = reportePersonas(), f = fmt(Date.now()), ls = [];
-  const sel = repSel ? ps.filter(p => p.nombre === repSel) : ps;
-  const tot = sel.reduce((a, p) => a + p.bienes.length, 0), ins = sel.reduce((a, p) => a + p.ins.length, 0);
-  ls.push('REPORTE DE INVENTARIO' + (repSel ? ' — ' + repSel : ' — todas las personas'), 'Generado: ' + f + ' por ' + sesion.usuario, '', `Bienes totales: ${tot}`, `Inventariados: ${ins} (${pct(ins, tot)} %)`, `Faltan: ${tot - ins}`, '');
-  if (repSel) {
-    const p = sel[0]; if (p && p.falta.length) { ls.push('Bienes que faltan:'); p.falta.slice(0, max).forEach(b => ls.push(`- ${b.CodigoInterno || b.IDCodigoAntiguo} · ${b.IDCodigoAntiguo} · ${(b.Descripcion || '').slice(0, 40)}`)); if (p.falta.length > max) ls.push(`… y ${p.falta.length - max} más (vea el Excel adjunto).`); }
-  } else sel.forEach(p => ls.push(`${p.nombre}: ${p.ins.length}/${p.bienes.length} (faltan ${p.falta.length})`));
+  const l = repBienes('amb'), ins = l.filter(hecho), falta = l.filter(b => !hecho(b)), ls = [];
+  ls.push('REPORTE DE INVENTARIO — ' + etiquetaFiltro(), 'Generado: ' + fmt(Date.now()) + ' por ' + sesion.usuario, '', `Bienes totales: ${l.length}`, `Inventariados: ${ins.length} (${pct(ins.length, l.length)} %)`, `Faltan: ${falta.length}`, '');
+  if (falta.length && max > 0) { ls.push('Bienes que faltan:'); falta.slice(0, max).forEach(b => ls.push(`- ${b.CodigoInterno || b.IDCodigoAntiguo} · ${b.IDCodigoAntiguo} · ${(b.Descripcion || '').slice(0, 40)}`)); if (falta.length > max) ls.push(`… y ${falta.length - max} más (vea el Excel adjunto).`); }
   return ls.join('\n');
 }
 function enviarReporteEmail() {
-  const asunto = 'Reporte de inventario' + (repSel ? ' — ' + repSel : '');
   let max = 40, cuerpo = textoReporte(max);
   while (encodeURIComponent(cuerpo).length > 1700 && max > 0) { max = Math.max(0, max - 5); cuerpo = textoReporte(max); }
-  if (!repSel && encodeURIComponent(cuerpo).length > 1700) cuerpo = cuerpo.split('\n').slice(0, 30).join('\n') + '\n… (el detalle completo va en el Excel adjunto).';
-  const a = el('a', { href: 'mailto:?subject=' + encodeURIComponent(asunto) + '&body=' + encodeURIComponent(cuerpo) }); document.body.append(a); a.click(); a.remove();
+  const a = el('a', { href: 'mailto:?subject=' + encodeURIComponent('Reporte de inventario — ' + etiquetaFiltro()) + '&body=' + encodeURIComponent(cuerpo) }); document.body.append(a); a.click(); a.remove();
   toast('Se abrió su correo con el resumen. Para el detalle, use «Compartir / descargar Excel» y adjúntelo.');
 }
 function libroReporte() {
-  const ps = reportePersonas(), sel = repSel ? ps.filter(p => p.nombre === repSel) : ps, f = ms => ms ? fmt(ms) : '';
+  const l = repBienes('amb'), ins = l.filter(hecho), falta = l.filter(b => !hecho(b)), f = ms => ms ? fmt(ms) : '';
   const cab = ['Persona', 'ID del bien', 'IDCodigoAntiguo', 'Descripcion', 'Ubicacion', 'Ambiente', 'Baja', 'Resultado', 'Condicion', 'Estado', 'Situacion', 'Observaciones', 'FechaGuardado', 'Usuario'];
-  const fila = (p, b) => [p.nombre, b.CodigoInterno, b.IDCodigoAntiguo, b.Descripcion, b.Ubicacion, b.Ambiente, Number(b.Baja), b.Resultado, b.Condicion, b.Estado, b.Situacion, b.Observaciones, f(b.FechaGuardado), b.Usuario];
-  const res = [['Persona', 'Bienes totales', 'Inventariados', 'Faltan', '% avance', 'Con BAJA', 'Sobrantes a su nombre'], ...sel.map(p => [p.nombre, p.bienes.length, p.ins.length, p.falta.length, pct(p.ins.length, p.bienes.length), p.bajas, p.altas.length])];
+  const fila = b => [b.Nombre, b.CodigoInterno, b.IDCodigoAntiguo, b.Descripcion, b.Ubicacion, b.Ambiente, Number(b.Baja), b.Resultado, b.Condicion, b.Estado, b.Situacion, b.Observaciones, f(b.FechaGuardado), b.Usuario];
+  const res = [['Persona', 'Ubicacion', 'Ambiente', 'Bienes totales', 'Inventariados', 'Faltan', '% avance']];
+  const grupos = new Map(); l.forEach(b => { const k = [b.Nombre || sinNombre, b.Ubicacion || '', b.Ambiente || ''].join('\u0001'); if (!grupos.has(k)) grupos.set(k, []); grupos.get(k).push(b); });
+  [...grupos].sort((a, b) => a[0].localeCompare(b[0], 'es')).forEach(([k, g]) => { const [p, u, a] = k.split('\u0001'), n = g.filter(hecho).length; res.push([p, u, a, g.length, n, g.length - n, pct(n, g.length)]); });
+  res.push(['TOTAL', '', '', l.length, ins.length, falta.length, pct(ins.length, l.length)]);
   const hoja = (aoa, anchos) => { const w = XLSX.utils.aoa_to_sheet(aoa); w['!cols'] = anchos.map(x => ({ wch: x })); return w; };
   const wb = XLSX.utils.book_new(), an = [30, 14, 16, 60, 30, 30, 6, 12, 10, 10, 22, 40, 20, 10];
-  XLSX.utils.book_append_sheet(wb, hoja(res, [30, 14, 14, 10, 10, 10, 20]), 'Resumen');
-  XLSX.utils.book_append_sheet(wb, hoja([cab, ...sel.flatMap(p => p.ins.map(b => fila(p, b)))], an), 'Inventariados');
-  XLSX.utils.book_append_sheet(wb, hoja([cab, ...sel.flatMap(p => p.falta.map(b => fila(p, b)))], an), 'Faltan');
+  XLSX.utils.book_append_sheet(wb, hoja(res, [30, 30, 30, 14, 14, 10, 10]), 'Resumen');
+  XLSX.utils.book_append_sheet(wb, hoja([cab, ...falta.map(fila)], an), 'Faltan');
+  XLSX.utils.book_append_sheet(wb, hoja([cab, ...ins.map(fila)], an), 'Inventariados');
   return wb;
 }
 async function exportarReporte() {
@@ -745,7 +750,7 @@ async function exportarReporte() {
   try {
     busy('Generando reporte…'); await tick();
     const buf = XLSX.write(libroReporte(), { bookType: 'xlsx', type: 'array' }), d = new Date();
-    const nombre = `Reporte_${(repSel || 'todas').replace(/[^A-Za-z0-9]+/g, '_').slice(0, 40)}_${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}.xlsx`;
+    const nombre = `Reporte_${(rep.per || 'todas').replace(/[^A-Za-z0-9]+/g, '_').slice(0, 40)}_${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}.xlsx`;
     const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }); unbusy();
     const file = new File([blob], nombre, { type: blob.type });
     if (navigator.canShare && navigator.canShare({ files: [file] })) { try { await navigator.share({ files: [file], title: nombre, text: textoReporte(0) }); return; } catch (e) { if (e.name === 'AbortError') return; } }
@@ -826,7 +831,7 @@ function conectar() {
   $('#btn-alta-cancelar').addEventListener('click', cerrarYSeguir);
   $('#btn-export').addEventListener('click', () => exportar(false));
   $('#btn-reporte').addEventListener('click', abrirReporte); $('#btn-rep-cerrar').addEventListener('click', () => overlay(null));
-  $('#rep-sel').addEventListener('change', pintarReporte); $('#btn-rep-mail').addEventListener('click', enviarReporteEmail); $('#btn-rep-xlsx').addEventListener('click', exportarReporte);
+  ['#rep-sel', '#rep-ubi', '#rep-amb', '#rep-est'].forEach(x => $(x).addEventListener('change', () => pintarReporte(false))); $('#btn-rep-mail').addEventListener('click', enviarReporteEmail); $('#btn-rep-xlsx').addEventListener('click', exportarReporte);
   $('#btn-share').addEventListener('click', () => exportar(true));
   $('#btn-cambiar').addEventListener('click', cambiarClave);
   $('#btn-borrar').addEventListener('click', borrarTodo);
