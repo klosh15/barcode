@@ -80,6 +80,7 @@
       <button id="btn-manual" class="btn small" style="width:auto">Buscar</button>
     </div>
     <div class="stats" id="stats"></div>
+    <button id="btn-reporte" class="btn sec" style="margin-top:10px">Reporte por persona</button>
   </div>
 </div>
 
@@ -141,6 +142,21 @@
     <button id="btn-alta-guardar" class="btn ok">Guardar</button>
     <button id="btn-alta-cancelar" class="btn sec">Cancelar</button>
   </div></div>
+</div>
+
+<!-- ============ REPORTE POR PERSONA ============ -->
+<div id="o-rep" class="overlay" hidden>
+  <div class="topbar"><div class="who">Reporte por persona</div><button id="btn-rep-cerrar" class="btn sec small" style="width:auto">Volver</button></div>
+  <div class="page">
+    <label for="rep-sel" style="margin-top:0">Persona (columna Nombre)</label>
+    <select id="rep-sel"></select>
+    <div id="rep-cuerpo" style="margin-top:10px"></div>
+    <div class="row" style="margin-top:12px">
+      <button id="btn-rep-mail" class="btn">Enviar por email</button>
+      <button id="btn-rep-xlsx" class="btn sec">Compartir / descargar Excel</button>
+    </div>
+    <p class="muted">El email lleva el resumen y los primeros bienes que faltan. Para enviar el detalle completo, genere el Excel y adjúntelo al correo (en el celular, «Compartir» lo ofrece directamente).</p>
+  </div>
 </div>
 
 <!-- ============ MENÚ ============ -->
